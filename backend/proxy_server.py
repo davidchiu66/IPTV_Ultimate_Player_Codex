@@ -1,10 +1,12 @@
 import urllib.request
 import urllib.error
+import os
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import SimpleHTTPRequestHandler
 import socketserver
 from utils.helpers import normalize_name
 from utils.url_cleaning import clean_media_url
+from utils.app_paths import resource_path
 import json
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -30,6 +32,7 @@ class ProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self):
+        request_path = urlparse(self.path).path
         if self.path.startswith('/api/epg'):
             self.handle_epg()
         elif self.path.startswith('/api/channels'):
@@ -38,14 +41,74 @@ class ProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.handle_resolve()
         elif self.path.startswith('/proxy?'):
             self.handle_proxy(method="GET")
+        elif request_path == '/live.html':
+            self.handle_live_html(method="GET")
+        elif request_path.startswith('/frontend/'):
+            self.handle_bundled_static(request_path, method="GET")
         else:
             super().do_GET()
 
     def do_HEAD(self):
+        request_path = urlparse(self.path).path
         if self.path.startswith('/proxy?'):
             self.handle_proxy(method="HEAD")
+        elif request_path == '/live.html':
+            self.handle_live_html(method="HEAD")
+        elif request_path.startswith('/frontend/'):
+            self.handle_bundled_static(request_path, method="HEAD")
         else:
             super().do_HEAD()
+
+    def handle_live_html(self, method="GET"):
+        app_ref = getattr(self.server, 'app_ref', None)
+        html_path = ""
+        if app_ref and hasattr(app_ref, 'get_browser_html_path'):
+            html_path = app_ref.get_browser_html_path()
+
+        if not html_path or not os.path.exists(html_path):
+            self.send_error(404, "Browser player page has not been generated")
+            return
+
+        self._send_file(html_path, "text/html; charset=utf-8", method=method)
+
+    def handle_bundled_static(self, request_path, method="GET"):
+        relative_path = unquote(request_path.lstrip('/')).replace("\\", "/")
+        parts = [part for part in relative_path.split("/") if part]
+        if not parts or ".." in parts or parts[0] != "frontend":
+            self.send_error(404, "Not found")
+            return
+
+        static_path = resource_path(relative_path)
+        if not os.path.exists(static_path):
+            self.send_error(404, "Not found")
+            return
+
+        content_type = "application/octet-stream"
+        if static_path.lower().endswith(".js"):
+            content_type = "application/javascript; charset=utf-8"
+        elif static_path.lower().endswith(".css"):
+            content_type = "text/css; charset=utf-8"
+        elif static_path.lower().endswith(".html"):
+            content_type = "text/html; charset=utf-8"
+        self._send_file(static_path, content_type, method=method)
+
+    def _send_file(self, file_path, content_type, method="GET"):
+        try:
+            file_size = os.path.getsize(file_path)
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(file_size))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            if method != "HEAD":
+                with open(file_path, "rb") as handle:
+                    while True:
+                        chunk = handle.read(128 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            return
 
     def do_POST(self):
         if self.path.startswith('/proxy?'):

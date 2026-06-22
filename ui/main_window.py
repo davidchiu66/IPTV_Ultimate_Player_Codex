@@ -67,10 +67,12 @@ from utils.clock_settings import get_clock_show_weekday, set_clock_show_weekday
 from utils.media_types import is_channel_resource, is_local_media, is_local_media_channel, is_resource_file, resource_type_label
 from utils.url_cleaning import clean_media_url
 from utils.i18n import get_language, set_language
+from utils.app_paths import resource_path, runtime_path
 
 
 HTML_FILE = "live.html"
-TEMPLATE_FILE = "frontend/template.html"
+TEMPLATE_FILE = resource_path("frontend/template.html")
+BROWSER_HTML_FILE = runtime_path(HTML_FILE)
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -2338,11 +2340,15 @@ class MainWindow(QMainWindow):
             final_html = html_template.replace("{{CHANNELS_JSON}}", channels_json_str)
 
             # 写入最终的 HTML 文件
-            with open(HTML_FILE, "w", encoding="utf-8") as f:
+            with open(BROWSER_HTML_FILE, "w", encoding="utf-8") as f:
                 f.write(final_html)
         except Exception as e:
             # 静默失败，不打扰用户
             print(f"重新生成 live.html 失败: {e}")
+
+    def get_browser_html_path(self):
+        """Return the generated browser player HTML path."""
+        return BROWSER_HTML_FILE
 
     def _frontend_keys_dict(self, channel):
         keys_dict = {}
@@ -2630,7 +2636,7 @@ class MainWindow(QMainWindow):
         final_html = html_template.replace("{{CHANNELS_JSON}}", channels_json)
 
         # 写入 live.html
-        with open(HTML_FILE, "w", encoding="utf-8") as f:
+        with open(BROWSER_HTML_FILE, "w", encoding="utf-8") as f:
             f.write(final_html)
 
         # 打开浏览器
