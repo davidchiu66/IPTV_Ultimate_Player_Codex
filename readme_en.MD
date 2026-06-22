@@ -4,6 +4,8 @@
 
 🚀 **Promo page**: open [docs/index.html](docs/index.html), or publish the `docs/` directory with GitHub Pages.
 
+📌 **Project About**: see [ABOUT.md](ABOUT.md).
+
 📺 A Windows desktop IPTV and local media player built with **PySide6 + libmpv**. The project aims to combine live channel management, local playback, browser-assisted stream resolving, diagnostics, and a modern player UI in one maintainable application.
 
 > 🚧 This project is still evolving quickly. It is suitable for personal use, development, and feature validation. Complex live streams may depend on source-site policies, regional networks, expiring tokens, DRM, and browser compatibility.
