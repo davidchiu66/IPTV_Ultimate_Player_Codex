@@ -27,7 +27,7 @@
 
 **Website**
 
-https://davidchiu66.github.io/IPTV_Ultimate_Player_Codex/
+https://dz.cc.cd/player/
 
 **Topics**
 
@@ -36,4 +36,3 @@ https://davidchiu66.github.io/IPTV_Ultimate_Player_Codex/
 ## English Summary
 
 **IPTV Ultimate Player** is a Windows desktop IPTV and local media player built with **PySide6 + libmpv**. It combines live channel management, local media playback, browser-assisted stream resolving, favorites, playlists, diagnostics, and a modern glassmorphism player UI into one maintainable desktop application.
-
