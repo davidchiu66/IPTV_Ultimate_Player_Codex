@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">IPTV Ultimate Player icon concept 03 - Media Library</title>
+  <desc id="desc">A modern media library icon with layered resource cards and a glowing player screen.</desc>
+  <defs>
+    <linearGradient id="bg" x1="30" y1="28" x2="228" y2="231" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14263d"/>
+      <stop offset="0.5" stop-color="#0a1221"/>
+      <stop offset="1" stop-color="#05070f"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="51" y1="49" x2="169" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="1" stop-color="#f6a63a"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="84" y1="72" x2="203" y2="193" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8fe8ff"/>
+      <stop offset="1" stop-color="#4b7cff"/>
+    </linearGradient>
+    <linearGradient id="play" x1="112" y1="92" x2="165" y2="148" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d6edff"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.36 0 0 0 0 0.72 0 0 0 0 1 0 0 0 0.72 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="24" y="24" width="208" height="208" rx="44" fill="url(#bg)"/>
+    <rect x="25" y="25" width="206" height="206" rx="43" fill="none" stroke="#8cc9ff" stroke-opacity="0.42" stroke-width="2"/>
+    <path d="M56 78C56 65 66 55 79 55H117L129 68H176C188 68 198 78 198 90V155C198 168 188 178 175 178H79C66 178 56 168 56 155Z" fill="url(#gold)" opacity="0.95"/>
+    <path d="M56 93H198V158C198 170 188 180 176 180H78C66 180 56 170 56 158Z" fill="#d8842f" opacity="0.52"/>
+    <rect x="72" y="84" width="136" height="104" rx="24" fill="#07101d" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2"/>
+    <rect x="79" y="91" width="122" height="90" rx="19" fill="url(#blue)" opacity="0.38" stroke="#7fd4ff" stroke-opacity="0.55"/>
+    <circle cx="140" cy="136" r="34" fill="#07111f" opacity="0.76" stroke="#79c6ff" stroke-width="3.2" filter="url(#glow)"/>
+    <path d="M129 116L160 136L129 156Z" fill="url(#play)" filter="url(#glow)"/>
+    <rect x="84" y="199" width="88" height="9" rx="4.5" fill="#6fb7ff" opacity="0.86" filter="url(#glow)"/>
+    <rect x="181" y="199" width="22" height="9" rx="4.5" fill="#ffffff" opacity="0.76"/>
+    <path d="M94 111H110M94 124H116M94 137H106" stroke="#effaff" stroke-width="5" stroke-linecap="round" opacity="0.8"/>
+    <path d="M50 193C76 210 119 219 162 209" fill="none" stroke="#75bdff" stroke-width="4" stroke-linecap="round" opacity="0.52"/>
+  </g>
+</svg>

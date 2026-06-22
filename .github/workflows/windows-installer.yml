@@ -92,10 +92,12 @@ jobs:
             --clean `
             --windowed `
             --name "$env:APP_NAME" `
+            --icon "assets/icons/app.ico" `
             --collect-all PySide6 `
             --hidden-import PySide6.QtWebEngineCore `
             --hidden-import PySide6.QtWebEngineWidgets `
             --hidden-import PySide6.QtWebEngineQuick `
+            --add-data "assets;assets" `
             --add-data "frontend;frontend" `
             --add-data "i18n;i18n" `
             --add-data "plugins;plugins" `
@@ -121,6 +123,7 @@ jobs:
           DefaultGroupName={#MyAppName}
           DisableProgramGroupPage=yes
           LicenseFile=..\LICENSE
+          SetupIconFile=..\assets\icons\app.ico
           OutputDir=.
           OutputBaseFilename=IPTVPlayer-Setup-{#MyAppVersion}
           Compression=lzma
@@ -149,8 +152,8 @@ jobs:
           Name: "{app}\logs"; Flags: uninsneveruninstall
 
           [Icons]
-          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
           [Run]
           Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

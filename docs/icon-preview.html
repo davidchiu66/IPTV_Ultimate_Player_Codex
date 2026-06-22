@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IPTV Ultimate Player Icon Candidates</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070a10;
+      --panel: rgba(20, 28, 42, 0.78);
+      --line: rgba(132, 184, 255, 0.28);
+      --text: #edf6ff;
+      --muted: #a9bdd5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      background:
+        linear-gradient(135deg, rgba(114, 185, 255, 0.12), transparent 40%),
+        linear-gradient(180deg, #0d1320, var(--bg));
+    }
+    main {
+      width: min(1120px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 56px 0;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 34px;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 32px;
+    }
+    .card {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 22px 54px rgba(0, 0, 0, 0.28);
+    }
+    .large {
+      display: grid;
+      place-items: center;
+      min-height: 260px;
+      border-radius: 10px;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,0.05) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,0.05) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.05) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.05) 75%),
+        #141b2a;
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+    .large img {
+      width: 180px;
+      height: 180px;
+      filter: drop-shadow(0 18px 28px rgba(0,0,0,0.42));
+    }
+    h2 {
+      margin: 18px 0 8px;
+      font-size: 20px;
+    }
+    .sizes {
+      display: flex;
+      align-items: end;
+      gap: 18px;
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid rgba(132, 184, 255, 0.16);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .size-item {
+      display: grid;
+      gap: 8px;
+      justify-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .s64 { width: 64px; height: 64px; }
+    .s48 { width: 48px; height: 48px; }
+    .s32 { width: 32px; height: 32px; }
+    .s16 { width: 16px; height: 16px; }
+    code {
+      color: #d9efff;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .large { min-height: 220px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>安装后桌面图标候选</h1>
+    <p>每个方案都提供 SVG 源文件和 ICO 安装图标文件。请重点看 48px、32px、16px 小尺寸是否还清晰，因为 Windows 桌面和开始菜单经常会显示小图标。</p>
+    <section class="grid">
+      <article class="card">
+        <div class="large"><img src="../assets/icons/iptv-icon-01-glass-play.svg" alt="方案一：玻璃播放键"></div>
+        <h2>方案一：玻璃播放键</h2>
+        <p>最贴近播放器本体，深色玻璃面板 + 蓝色辉光播放键。识别度强，适合作为默认应用图标。</p>
+        <div class="sizes">
+          <span class="size-item"><img class="s64" src="../assets/icons/iptv-icon-01-glass-play.svg" alt="">64</span>
+          <span class="size-item"><img class="s48" src="../assets/icons/iptv-icon-01-glass-play.svg" alt="">48</span>
+          <span class="size-item"><img class="s32" src="../assets/icons/iptv-icon-01-glass-play.svg" alt="">32</span>
+          <span class="size-item"><img class="s16" src="../assets/icons/iptv-icon-01-glass-play.svg" alt="">16</span>
+        </div>
+        <p><code>assets/icons/iptv-icon-01-glass-play.ico</code></p>
+      </article>
+      <article class="card">
+        <div class="large"><img src="../assets/icons/iptv-icon-02-signal-orbit.svg" alt="方案二：信号轨道"></div>
+        <h2>方案二：信号轨道</h2>
+        <p>科技感最强，突出 IPTV 信号、网络、解析和播放链路。适合想要更酷、更未来感的方向。</p>
+        <div class="sizes">
+          <span class="size-item"><img class="s64" src="../assets/icons/iptv-icon-02-signal-orbit.svg" alt="">64</span>
+          <span class="size-item"><img class="s48" src="../assets/icons/iptv-icon-02-signal-orbit.svg" alt="">48</span>
+          <span class="size-item"><img class="s32" src="../assets/icons/iptv-icon-02-signal-orbit.svg" alt="">32</span>
+          <span class="size-item"><img class="s16" src="../assets/icons/iptv-icon-02-signal-orbit.svg" alt="">16</span>
+        </div>
+        <p><code>assets/icons/iptv-icon-02-signal-orbit.ico</code></p>
+      </article>
+      <article class="card">
+        <div class="large"><img src="../assets/icons/iptv-icon-03-media-library.svg" alt="方案三：媒体资源库"></div>
+        <h2>方案三：媒体资源库</h2>
+        <p>保留“资源库/频道目录”的语义，但比当前桌面图标更现代。适合强调频道资源和本地媒体管理。</p>
+        <div class="sizes">
+          <span class="size-item"><img class="s64" src="../assets/icons/iptv-icon-03-media-library.svg" alt="">64</span>
+          <span class="size-item"><img class="s48" src="../assets/icons/iptv-icon-03-media-library.svg" alt="">48</span>
+          <span class="size-item"><img class="s32" src="../assets/icons/iptv-icon-03-media-library.svg" alt="">32</span>
+          <span class="size-item"><img class="s16" src="../assets/icons/iptv-icon-03-media-library.svg" alt="">16</span>
+        </div>
+        <p><code>assets/icons/iptv-icon-03-media-library.ico</code></p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

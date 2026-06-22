@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">IPTV Ultimate Player icon concept 01 - Glass Play</title>
+  <desc id="desc">A dark glassmorphism media player icon with a glowing play button.</desc>
+  <defs>
+    <linearGradient id="bg" x1="35" y1="24" x2="224" y2="235" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38465c"/>
+      <stop offset="0.42" stop-color="#121b2b"/>
+      <stop offset="1" stop-color="#050914"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="64" y1="50" x2="192" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5bd6ff" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#4f7dff" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="play" x1="98" y1="78" x2="172" y2="153" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#a9dcff"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.3 0 0 0 0 0.65 0 0 0 0 1 0 0 0 0.75 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+    <clipPath id="clip">
+      <rect x="24" y="24" width="208" height="208" rx="46"/>
+    </clipPath>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="24" y="24" width="208" height="208" rx="46" fill="url(#bg)"/>
+    <g clip-path="url(#clip)">
+      <path d="M20 68C75 42 139 35 236 63V24H20Z" fill="#78baff" opacity="0.12"/>
+      <path d="M22 207C81 180 157 176 241 202V236H22Z" fill="#5ce7ff" opacity="0.07"/>
+      <path d="M43 49H212" stroke="#ffffff" stroke-opacity="0.08"/>
+      <path d="M42 64H213" stroke="#ffffff" stroke-opacity="0.045"/>
+      <path d="M42 79H213" stroke="#ffffff" stroke-opacity="0.035"/>
+    </g>
+    <rect x="24.8" y="24.8" width="206.4" height="206.4" rx="45.2" fill="none" stroke="#8fc8ff" stroke-opacity="0.56" stroke-width="1.6"/>
+    <rect x="49" y="53" width="158" height="112" rx="24" fill="#07101d" stroke="#7fc4ff" stroke-opacity="0.55" stroke-width="2.2"/>
+    <rect x="56" y="60" width="144" height="98" rx="19" fill="url(#screen)"/>
+    <circle cx="128" cy="109" r="42" fill="#07111f" opacity="0.72" stroke="#76bdff" stroke-width="3.5" filter="url(#glow)"/>
+    <path d="M116 86L155 109L116 132Z" fill="url(#play)" filter="url(#glow)"/>
+    <rect x="70" y="181" width="116" height="12" rx="6" fill="#09111d" stroke="#7fc4ff" stroke-opacity="0.34"/>
+    <rect x="78" y="185" width="60" height="4" rx="2" fill="#72b9ff" filter="url(#glow)"/>
+    <circle cx="174" cy="187" r="5" fill="#dff3ff"/>
+    <path d="M76 79H92M76 91H103M76 103H88" stroke="#d9efff" stroke-width="5" stroke-linecap="round" opacity="0.92"/>
+  </g>
+</svg>
