@@ -92,12 +92,11 @@ jobs:
             --clean `
             --windowed `
             --name "$env:APP_NAME" `
-            --icon "assets/icons/app.ico" `
+            --icon "docs/assets/icons/app.ico" `
             --collect-all PySide6 `
             --hidden-import PySide6.QtWebEngineCore `
             --hidden-import PySide6.QtWebEngineWidgets `
             --hidden-import PySide6.QtWebEngineQuick `
-            --add-data "assets;assets" `
             --add-data "frontend;frontend" `
             --add-data "i18n;i18n" `
             --add-data "plugins;plugins" `
@@ -123,7 +122,8 @@ jobs:
           DefaultGroupName={#MyAppName}
           DisableProgramGroupPage=yes
           LicenseFile=..\LICENSE
-          SetupIconFile=..\assets\icons\app.ico
+          SetupIconFile=..\docs\assets\icons\app.ico
+          UninstallDisplayIcon={app}\app.ico
           OutputDir=.
           OutputBaseFilename=IPTVPlayer-Setup-{#MyAppVersion}
           Compression=lzma
@@ -136,7 +136,7 @@ jobs:
           Name: "english"; MessagesFile: "compiler:Default.isl"
 
           [Tasks]
-          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
           [Files]
           Source: "..\dist\{#MyAppDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -144,6 +144,7 @@ jobs:
           Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\readme_en.MD"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\ABOUT.md"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\docs\assets\icons\app.ico"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion
 
           [Dirs]
           Name: "{app}\Channels"; Flags: uninsneveruninstall
@@ -152,8 +153,8 @@ jobs:
           Name: "{app}\logs"; Flags: uninsneveruninstall
 
           [Icons]
-          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
-          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; IconIndex: 0
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; IconIndex: 0; Tasks: desktopicon
 
           [Run]
           Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
