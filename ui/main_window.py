@@ -117,6 +117,13 @@ def _looks_like_direct_media_url(url):
     return any(token in lower for token in direct_tokens)
 
 
+def _is_explicit_http_media_url(url):
+    lower = str(url or "").strip().lower()
+    return lower.startswith(("http://", "https://")) and any(
+        token in lower for token in (".mp4", ".m4v", ".mov", ".flv", ".m3u8", ".mpd")
+    )
+
+
 class MainWindow(QMainWindow):
     epg_loaded_signal = Signal(int, int)
     epg_download_success_signal = Signal(str, bool)
@@ -1821,6 +1828,10 @@ class MainWindow(QMainWindow):
                 return "MPD/DASH"
             if "hls" in manifest_type or "m3u8" in manifest_type:
                 return "HLS/M3U8"
+            if manifest_type == "mp4":
+                return "MP4"
+            if manifest_type == "flv":
+                return "FLV"
             if manifest_type == "rtsp":
                 return "RTSP"
             if manifest_type == "rtmp":
@@ -1832,6 +1843,10 @@ class MainWindow(QMainWindow):
             return "MPD/DASH"
         if ".m3u8" in lower_url or "hls" in lower_url:
             return "HLS/M3U8"
+        if ".mp4" in lower_url or ".m4v" in lower_url or ".mov" in lower_url:
+            return "MP4"
+        if ".flv" in lower_url:
+            return "FLV"
         if lower_url.startswith("rtsp://"):
             return "RTSP"
         if lower_url.startswith("rtmp://"):
@@ -2190,7 +2205,18 @@ class MainWindow(QMainWindow):
             applied["_OriginalManifest"] = clean_media_url(channel.get("Manifest") or "")
             applied["_ResolvedSourceUrl"] = source_page
             referer = _browser_like_referer(source_page, media_url)
-            if referer and not applied.get("Referer"):
+            resolved_is_direct_media = resolved_from == "redirect" and _is_explicit_http_media_url(media_url)
+            if resolved_is_direct_media:
+                applied.pop("Referer", None)
+                headers = dict(applied.get("Headers") or {})
+                for key in list(headers.keys()):
+                    if str(key).strip().lower() in {"origin", "referer"}:
+                        headers.pop(key, None)
+                if headers:
+                    applied["Headers"] = headers
+                else:
+                    applied.pop("Headers", None)
+            elif referer and not applied.get("Referer"):
                 applied["Referer"] = referer
             if not applied.get("UserAgent"):
                 applied["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
@@ -2198,7 +2224,7 @@ class MainWindow(QMainWindow):
             page_origin = _url_origin(source_page)
             media_origin = _url_origin(media_url)
             headers = dict(applied.get("Headers") or {})
-            if page_origin and media_origin and page_origin != media_origin:
+            if not resolved_is_direct_media and page_origin and media_origin and page_origin != media_origin:
                 headers.setdefault("Origin", page_origin)
                 headers.setdefault("Accept", "*/*")
                 applied["UseLocalProxy"] = True

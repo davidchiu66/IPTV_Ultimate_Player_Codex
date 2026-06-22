@@ -46,6 +46,14 @@ def _url_origin(url):
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def _is_explicit_http_media_url(url):
+    """Return whether an HTTP URL points directly at a media file."""
+    lower = str(url or "").strip().lower()
+    return lower.startswith(("http://", "https://")) and any(
+        token in lower for token in (".mp4", ".m4v", ".mov", ".flv", ".m3u8", ".mpd")
+    )
+
+
 class ResolveChannelWorker(QObject):
     """Resolve a live channel in a worker thread."""
 
@@ -265,6 +273,17 @@ MPV_PLAYBACK_POLICIES = {
             "cache-secs": "20",
             "demuxer-max-bytes": "128MiB",
             "demuxer-max-back-bytes": "64MiB",
+            "vd-lavc-threads": "0",
+        },
+    },
+    "http_file": {
+        "name": "http-file-vod",
+        "options": {
+            "cache": "yes",
+            "cache-pause": "no",
+            "cache-secs": "45",
+            "demuxer-max-bytes": "512MiB",
+            "demuxer-max-back-bytes": "192MiB",
             "vd-lavc-threads": "0",
         },
     },
@@ -819,6 +838,8 @@ class MpvVideoWidget(QWidget):
             return MPV_PLAYBACK_POLICIES[stream_format]
         if stream_format in {"rtsp", "rtmp"}:
             return MPV_PLAYBACK_POLICIES["realtime"]
+        if stream_format in {"mp4", "flv"}:
+            return MPV_PLAYBACK_POLICIES["http_file"]
         return MPV_PLAYBACK_POLICIES["default"]
 
     def _apply_playback_policy(self, channel, stream_format):
@@ -875,6 +896,7 @@ class MpvVideoWidget(QWidget):
         user_agent = channel.get("UserAgent") or ""
         referer = channel.get("Referer") or ""
         headers = channel.get("Headers") or {}
+        stream_url = clean_media_url(channel.get("Manifest") or "")
         header_fields = []
         if user_agent:
             header_fields.append(f"User-Agent: {user_agent}")
@@ -895,10 +917,23 @@ class MpvVideoWidget(QWidget):
                 if key_text.lower() in {"user-agent", "referer"}:
                     continue
                 header_fields.append(f"{key_text}: {value_text}")
+        if _is_explicit_http_media_url(stream_url):
+            existing = {field.split(":", 1)[0].strip().lower() for field in header_fields if ":" in field}
+            browser_media_headers = {
+                "Accept": "*/*",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Dest": "video",
+                "Cache-Control": "no-cache",
+            }
+            for key, value in browser_media_headers.items():
+                if key.lower() not in existing:
+                    header_fields.append(f"{key}: {value}")
         self._set_player_property("http-header-fields", ",".join(header_fields) if header_fields else "")
 
         proxy_value, _proxy_source = get_effective_proxy(channel)
         self._set_player_property("http-proxy", proxy_value or "")
+        self._set_player_property("http-seekable", "yes")
         self._set_player_property("network-timeout", 15)
         self._set_player_property("hls-bitrate", self._quality_bitrate())
         self._set_player_property("rtsp-transport", "tcp")
@@ -1184,13 +1219,24 @@ class MpvVideoWidget(QWidget):
             )
             applied["_OriginalManifest"] = clean_media_url(channel.get("Manifest") or "")
             applied["_ResolvedSourceUrl"] = source_page
-            if source_page and not applied.get("Referer"):
+            resolved_is_direct_media = _is_explicit_http_media_url(applied.get("Manifest") or "")
+            if resolved_from == "redirect" and resolved_is_direct_media:
+                applied.pop("Referer", None)
+                headers = dict(applied.get("Headers") or {})
+                for key in list(headers.keys()):
+                    if str(key).strip().lower() in {"origin", "referer"}:
+                        headers.pop(key, None)
+                if headers:
+                    applied["Headers"] = headers
+                else:
+                    applied.pop("Headers", None)
+            elif source_page and not applied.get("Referer"):
                 applied["Referer"] = source_page
             if not applied.get("UserAgent"):
                 applied["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
             page_origin = _url_origin(source_page)
             media_origin = _url_origin(applied.get("Manifest") or "")
-            if page_origin and media_origin and page_origin != media_origin:
+            if not (resolved_from == "redirect" and resolved_is_direct_media) and page_origin and media_origin and page_origin != media_origin:
                 headers = dict(applied.get("Headers") or {})
                 headers.setdefault("Origin", page_origin)
                 headers.setdefault("Accept", "*/*")
