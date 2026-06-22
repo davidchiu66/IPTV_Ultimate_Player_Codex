@@ -804,17 +804,17 @@ class MainWindow(QMainWindow):
         """Return whether the left edge should open the channel list."""
         if not self.playlist_mgr.streams:
             return False
+
         mpv_widget = getattr(self.player_panel, "mpv_widget", None)
-        if mpv_widget is not None and getattr(mpv_widget, "_failure_sent", False):
-            return False
         channel = self.current_channel or getattr(mpv_widget, "current_channel", None) or {}
-        if not channel:
+        if channel and is_local_media_channel(channel):
             return False
-        if is_local_media_channel(channel):
-            return False
-        if mpv_widget is not None and getattr(mpv_widget, "player", None) is not None:
+
+        if self.current_config_path and is_channel_resource(self.current_config_path):
             return True
-        return getattr(self.player_panel, "state_badge", None) is not None and self.player_panel.state_badge.text() == "加载中"
+        if channel:
+            return not is_local_media_channel(channel)
+        return False
 
     def _show_left_edge_panel(self):
         """Show channel list for live playback, otherwise show resource library."""

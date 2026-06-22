@@ -273,43 +273,53 @@ class _CustomChromeEventFilter(QObject):
     """Keep the custom title bar geometry and margins in sync."""
 
     def __init__(self, window: QWidget, title_bar: GlassTitleBar, grip: QSizeGrip | None) -> None:
-        super().__init__(window)
         self._window = window
         self._title_bar = title_bar
         self._grip = grip
+        super().__init__(window)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """React to resize, title changes and full-screen state changes."""
-        if watched is self._window:
+        window = getattr(self, "_window", None)
+        title_bar = getattr(self, "_title_bar", None)
+        if window is None or title_bar is None:
+            return False
+        if watched is window:
             if event.type() in (QEvent.Resize, QEvent.Show, QEvent.WindowStateChange):
                 self.sync()
             elif event.type() == QEvent.WindowTitleChange:
-                self._title_bar.set_title(self._window.windowTitle())
+                title_bar.set_title(window.windowTitle())
         return False
 
     def sync(self) -> None:
         """Apply current title-bar placement and visibility."""
-        fullscreen = self._window.isFullScreen()
-        width = max(0, self._window.width())
-        self._title_bar.setGeometry(0, 0, width, _TITLE_BAR_HEIGHT)
-        self._title_bar.setVisible(not fullscreen)
-        self._title_bar.sync_window_state()
-        if fullscreen:
-            self._window.setContentsMargins(0, 0, 0, 0)
-        else:
-            self._window.setContentsMargins(0, _TITLE_BAR_HEIGHT, 0, 0)
-            self._title_bar.raise_()
+        window = getattr(self, "_window", None)
+        title_bar = getattr(self, "_title_bar", None)
+        if window is None or title_bar is None:
+            return
 
-        if self._grip is not None:
-            grip_size = self._grip.sizeHint()
-            self._grip.setGeometry(
-                self._window.width() - grip_size.width(),
-                self._window.height() - grip_size.height(),
+        fullscreen = window.isFullScreen()
+        width = max(0, window.width())
+        title_bar.setGeometry(0, 0, width, _TITLE_BAR_HEIGHT)
+        title_bar.setVisible(not fullscreen)
+        title_bar.sync_window_state()
+        if fullscreen:
+            window.setContentsMargins(0, 0, 0, 0)
+        else:
+            window.setContentsMargins(0, _TITLE_BAR_HEIGHT, 0, 0)
+            title_bar.raise_()
+
+        grip = getattr(self, "_grip", None)
+        if grip is not None:
+            grip_size = grip.sizeHint()
+            grip.setGeometry(
+                window.width() - grip_size.width(),
+                window.height() - grip_size.height(),
                 grip_size.width(),
                 grip_size.height(),
             )
-            self._grip.setVisible(not fullscreen and not self._window.isMaximized())
-            self._grip.raise_()
+            grip.setVisible(not fullscreen and not window.isMaximized())
+            grip.raise_()
 
 
 def install_custom_window_chrome(
