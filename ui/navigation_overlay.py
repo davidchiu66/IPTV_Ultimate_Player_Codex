@@ -254,16 +254,16 @@ class NavigationOverlay(BaseOverlay):
         layout.addWidget(self.btn_refresh)
 
         info_label = QLabel("当前目录")
-        info_label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        info_label.setObjectName("sectionLabel")
         layout.addWidget(info_label)
 
         self.dir_label = QLabel("-")
-        self.dir_label.setStyleSheet("color: #2a2a2a; font-size: 12px;")
+        self.dir_label.setObjectName("infoValue")
         self.dir_label.setWordWrap(True)
         layout.addWidget(self.dir_label)
 
         self.file_count_label = QLabel("资源数：0")
-        self.file_count_label.setStyleSheet("color: #8a8a8a; font-size: 11px;")
+        self.file_count_label.setObjectName("metaValue")
         layout.addWidget(self.file_count_label)
 
         filter_row = QHBoxLayout()
@@ -297,7 +297,7 @@ class NavigationOverlay(BaseOverlay):
         layout.addLayout(filter_row2)
 
         file_label = QLabel("资源文件")
-        file_label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        file_label.setObjectName("sectionLabel")
         layout.addWidget(file_label)
 
         self.file_list = QListWidget()
@@ -315,7 +315,7 @@ class NavigationOverlay(BaseOverlay):
         layout.setSpacing(10)
 
         label = QLabel("收藏的频道、视频、音频、GIF 和图片")
-        label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        label.setObjectName("hintLabel")
         layout.addWidget(label)
 
         self.resource_favorite_search = QLineEdit()
@@ -382,7 +382,7 @@ class NavigationOverlay(BaseOverlay):
         layout.setSpacing(10)
 
         label = QLabel("收藏的单个频道")
-        label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        label.setObjectName("hintLabel")
         layout.addWidget(label)
 
         self.channel_favorite_search = QLineEdit()
@@ -476,7 +476,7 @@ class NavigationOverlay(BaseOverlay):
             item.setToolTip(favorite.get("path") or "")
             item.setData(Qt.UserRole, favorite)
             if favorite.get("status") != "ok":
-                item.setForeground(QColor("#8a8a8a"))
+                item.setForeground(QColor("#8fa2bc"))
             self.resource_favorite_list.addItem(item)
 
     def set_channel_favorites(self, items) -> None:
@@ -495,7 +495,7 @@ class NavigationOverlay(BaseOverlay):
             item.setToolTip(favorite.get("source_path") or "频道快照")
             item.setData(Qt.UserRole, favorite)
             if favorite.get("status") in ("source_missing", "source_error", "changed"):
-                item.setForeground(QColor("#8a8a8a"))
+                item.setForeground(QColor("#8fa2bc"))
             self.channel_favorite_list.addItem(item)
 
     def _on_filter_changed(self, filter_key: str, checked: bool) -> None:

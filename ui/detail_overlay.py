@@ -2,6 +2,7 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (QVBoxLayout, QLabel, QPushButton,
                                QScrollArea, QWidget, QFrame)
 from ui.base_overlay import BaseOverlay
+from ui.theme import overlay_qss
 
 
 class DetailOverlay(BaseOverlay):
@@ -13,13 +14,7 @@ class DetailOverlay(BaseOverlay):
     def __init__(self, parent=None):
         super().__init__(parent, side='right', width=380)
         self.setObjectName("detailOverlay")
-        # 浅色调（与频道列表统一）
-        self.setStyleSheet("""
-            #detailOverlay { background: #f4f4f6; border-radius: 12px; }
-            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-            QScrollBar::handle:vertical { background: #c4c4cc; border-radius: 4px; min-height: 24px; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        """)
+        self.setStyleSheet(overlay_qss("detailOverlay"))
 
         # 主布局
         layout = QVBoxLayout(self)
@@ -28,7 +23,7 @@ class DetailOverlay(BaseOverlay):
 
         # 标题（放大、更美观）
         title = QLabel("频道详情")
-        title.setStyleSheet("color: #1a1a1a; font-size: 22px; font-weight: 700;")
+        title.setObjectName("panelTitle")
         layout.addWidget(title)
 
         # 滚动区域（关闭横向滚动条，内容靠自动换行约束在视口宽度内）
@@ -48,7 +43,7 @@ class DetailOverlay(BaseOverlay):
 
         # 占位文本
         self.placeholder = QLabel("未选择频道")
-        self.placeholder.setStyleSheet("color: #8a8a8a; font-size: 13px;")
+        self.placeholder.setObjectName("metaValue")
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.content_layout.addWidget(self.placeholder)
         self.content_layout.addStretch()
@@ -65,19 +60,9 @@ class DetailOverlay(BaseOverlay):
         self.btn_edit = QPushButton("编辑频道")
         self.btn_add = QPushButton("添加频道")
         self.btn_delete = QPushButton("删除频道")
+        self.btn_delete.setObjectName("dangerButton")
 
         for btn in [self.btn_edit, self.btn_add, self.btn_delete]:
-            btn.setStyleSheet("""
-                QPushButton {
-                    background: #3d6fb0;
-                    color: white;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 9px;
-                    font-size: 13px;
-                }
-                QPushButton:hover { background: #4a7fc4; }
-            """)
             btn_layout.addWidget(btn)
 
         layout.addWidget(btn_container)
@@ -133,11 +118,11 @@ class DetailOverlay(BaseOverlay):
     def _add_field(self, label_text, value_text, word_wrap=False):
         """添加字段显示"""
         label = QLabel(label_text)
-        label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        label.setObjectName("sectionLabel")
         self.content_layout.addWidget(label)
 
         value = QLabel(str(value_text))
-        value.setStyleSheet("color: #2a2a2a; font-size: 14px;")
+        value.setObjectName("infoValue")
         if word_wrap:
             value.setWordWrap(True)
         self.content_layout.addWidget(value)

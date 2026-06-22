@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from utils.media_types import resource_label
+from ui.theme import overlay_qss
 
 
 class NavigationPanel(QFrame):
@@ -20,6 +21,7 @@ class NavigationPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("navigationPanel")
+        self.setStyleSheet(overlay_qss("navigationPanel"))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -65,6 +67,7 @@ class NavigationPanel(QFrame):
 
         # 新增：删除文件按钮
         self.btn_delete_file = QPushButton("删除选中文件")
+        self.btn_delete_file.setObjectName("dangerButton")
         layout.addWidget(self.btn_delete_file)
 
         self.btn_directory.clicked.connect(self.directory_requested.emit)

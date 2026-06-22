@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
 )
 from ui.base_overlay import BaseOverlay
+from ui.theme import overlay_qss
 
 
 FAVORITE_ROLE = Qt.UserRole + 10
@@ -21,9 +22,9 @@ class FavoriteStarDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         painter.save()
         if option.state & QStyle.State_Selected:
-            painter.fillRect(option.rect, QColor("#dce8f7"))
+            painter.fillRect(option.rect, QColor(105, 178, 255, 115))
         elif option.state & QStyle.State_MouseOver:
-            painter.fillRect(option.rect, QColor("#eef2f8"))
+            painter.fillRect(option.rect, QColor(120, 180, 255, 42))
         painter.restore()
 
         text_option = QStyleOptionViewItem(option)
@@ -34,7 +35,7 @@ class FavoriteStarDelegate(QStyledItemDelegate):
         favorite = bool(index.data(FAVORITE_ROLE))
         star = "★" if favorite else "☆"
         painter.save()
-        painter.setPen(QColor("#d6a524" if favorite else "#8a8a8a"))
+        painter.setPen(QColor("#ffd56a" if favorite else "#9aa8be"))
         painter.drawText(
             option.rect.adjusted(0, 0, -10, 0),
             Qt.AlignRight | Qt.AlignVCenter,
@@ -50,11 +51,11 @@ class GroupRowDelegate(QStyledItemDelegate):
         painter.save()
         rect = option.rect
         if option.state & QStyle.State_Selected:
-            painter.fillRect(rect, QColor("#d9d9df"))
+            painter.fillRect(rect, QColor(105, 178, 255, 115))
         elif option.state & QStyle.State_MouseOver:
-            painter.fillRect(rect, QColor("#e8e8ec"))
+            painter.fillRect(rect, QColor(120, 180, 255, 42))
         # 底部分隔线
-        painter.setPen(QColor("#e2e2e6"))
+        painter.setPen(QColor(255, 255, 255, 22))
         painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
 
         fm = option.fontMetrics
@@ -62,14 +63,14 @@ class GroupRowDelegate(QStyledItemDelegate):
         count = str(index.data(Qt.UserRole + 1) or "")
         cw = fm.horizontalAdvance(count)
         crect = QRect(rect.right() - pad - cw, rect.top(), cw, rect.height())
-        painter.setPen(QColor("#9a9aa0"))
+        painter.setPen(QColor("#9fc9ff"))
         painter.drawText(crect, Qt.AlignVCenter | Qt.AlignRight, count)
 
         name = str(index.data(Qt.DisplayRole) or "")
         nleft = rect.left() + pad
         navail = max(0, crect.left() - 8 - nleft)
         elided = fm.elidedText(name, Qt.ElideRight, navail)
-        painter.setPen(QColor("#2a2a2a"))
+        painter.setPen(QColor("#edf4ff"))
         painter.drawText(QRect(nleft, rect.top(), navail, rect.height()),
                          Qt.AlignVCenter | Qt.AlignLeft, elided)
         painter.restore()
@@ -122,41 +123,68 @@ class LogoLoader(QObject):
             self.ready.emit(url, QIcon(pm))
 
 
-_LIGHT_QSS = """
-#channelListOverlay { background: #f4f4f6; border-radius: 12px; }
-#groupPane { background: #ececef; border-top-left-radius: 12px; border-bottom-left-radius: 12px; }
-#channelPane { background: #fbfbfc; border-top-right-radius: 12px; border-bottom-right-radius: 12px; }
-QLabel#paneTitle { color: #1a1a1a; font-size: 19px; font-weight: 700; }
-QLabel#paneSubtitle { color: #8a8a8a; font-size: 12px; }
+_CHANNEL_LIST_QSS = overlay_qss("channelListOverlay") + """
+#groupPane {
+    background: rgba(12, 18, 25, 120);
+    border-top-left-radius: 18px;
+    border-bottom-left-radius: 18px;
+}
+#channelPane {
+    background: rgba(10, 15, 22, 80);
+    border-top-right-radius: 18px;
+    border-bottom-right-radius: 18px;
+}
+QLabel#paneTitle {
+    color: #f3f7ff;
+    font-size: 19px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#paneSubtitle {
+    color: #9fc9ff;
+    font-size: 12px;
+    background: transparent;
+}
 QLineEdit#chSearch {
-    background: #ffffff; color: #2a2a2a; border: 1px solid #dcdce0;
-    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+    background: rgba(18, 22, 29, 215);
+    color: #f2f6ff;
+    border: 1px solid rgba(120, 180, 255, 105);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 13px;
 }
 QListWidget {
-    background: transparent; border: none; outline: 0;
+    background: rgba(13, 18, 26, 150);
+    border: 1px solid rgba(120, 180, 255, 65);
+    border-radius: 8px;
+    outline: 0;
 }
 QListWidget#channelList::item {
-    color: #2a2a2a; border-bottom: 1px solid #ededf0; padding: 8px 6px;
+    color: #edf4ff;
+    border-bottom: 1px solid rgba(255, 255, 255, 16);
+    padding: 8px 6px;
 }
-QListWidget#channelList::item:selected { background: #dce8f7; color: #14385f; }
-QListWidget#channelList::item:hover { background: #eef2f8; }
-QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-QScrollBar::handle:vertical { background: #c4c4cc; border-radius: 4px; min-height: 24px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QListWidget#channelList::item:selected {
+    background: rgba(105, 178, 255, 115);
+    color: #ffffff;
+}
+QListWidget#channelList::item:hover {
+    background: rgba(120, 180, 255, 42);
+}
 """
 
 ALL_CHANNELS = "__all__"
 
 
 class ChannelListOverlay(BaseOverlay):
-    """频道列表覆盖层：左侧分组 + 右侧频道（浅色）。"""
+    """频道列表覆盖层：左侧分组 + 右侧频道（玻璃风）。"""
     channel_selected = Signal(dict)
     channel_favorite_toggle_requested = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent, side='left', width=560)
         self.setObjectName("channelListOverlay")
-        self.setStyleSheet(_LIGHT_QSS)
+        self.setStyleSheet(_CHANNEL_LIST_QSS)
 
         self._channels = []
         self._filtered_channels = []

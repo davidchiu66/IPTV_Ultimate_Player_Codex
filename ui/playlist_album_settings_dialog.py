@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ui.dialog_style import apply_light_dialog_style
+
 
 class PlaylistAlbumSettingsDialog(QDialog):
     """Dialog for creating or editing a local playback album."""
@@ -23,6 +25,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
         self.album = dict(album or {})
         self.create_mode = bool(create_mode)
         self.setMinimumWidth(460)
+        apply_light_dialog_style(self)
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -32,6 +35,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
         self.name_input = QLineEdit()
         self.dir_input = QLineEdit()
         self.browse_button = QPushButton("...")
+        self.browse_button.setObjectName("secondaryButton")
         dir_row = QHBoxLayout()
         dir_row.addWidget(self.dir_input, 1)
         dir_row.addWidget(self.browse_button)
@@ -100,4 +104,3 @@ class PlaylistAlbumSettingsDialog(QDialog):
                 "outro_seconds": int(self.outro_spin.value()),
             },
         }
-

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.base_overlay import BaseOverlay
+from ui.theme import overlay_qss
 from utils.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, tr
 
 
@@ -23,55 +24,7 @@ class SettingsOverlay(BaseOverlay):
     def __init__(self, parent=None):
         super().__init__(parent, side="right", width=380)
         self.setObjectName("settingsOverlay")
-        self.setStyleSheet("""
-            #settingsOverlay {
-                background: #f4f4f6;
-                border-radius: 12px;
-            }
-            QLabel#panelTitle {
-                color: #1a1a1a;
-                font-size: 20px;
-                font-weight: 700;
-            }
-            QLabel#hintLabel {
-                color: #777982;
-                font-size: 12px;
-            }
-            QLabel {
-                color: #2a2a2a;
-                font-size: 13px;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                background: #ffffff;
-                color: #20242d;
-                border: 1px solid #d4d6dd;
-                border-radius: 6px;
-                padding: 7px 8px;
-                min-height: 22px;
-            }
-            QPushButton {
-                background: #3d6fb0;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 9px 12px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background: #4a7fc4;
-            }
-            QPushButton#cancelButton {
-                background: #d9dce3;
-                color: #20242d;
-            }
-            QPushButton#cancelButton:hover {
-                background: #c9cdd6;
-            }
-            QCheckBox {
-                color: #2a2a2a;
-                font-size: 13px;
-            }
-        """)
+        self.setStyleSheet(overlay_qss("settingsOverlay"))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)

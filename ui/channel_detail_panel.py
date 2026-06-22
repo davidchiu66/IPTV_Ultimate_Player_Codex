@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
 )
+from ui.theme import overlay_qss
 
 
 class ChannelDetailPanel(QFrame):
@@ -20,6 +21,7 @@ class ChannelDetailPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("channelDetailPanel")
+        self.setStyleSheet(overlay_qss("channelDetailPanel"))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -96,6 +98,7 @@ class ChannelDetailPanel(QFrame):
         self.add_button = QPushButton("新增")
         self.edit_button = QPushButton("编辑")
         self.delete_button = QPushButton("删除")
+        self.delete_button.setObjectName("dangerButton")
         self.save_button = QPushButton("保存")
         button_row.addWidget(self.add_button)
         button_row.addWidget(self.edit_button)

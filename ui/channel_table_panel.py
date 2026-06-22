@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QVBoxLayout,
 )
+from ui.theme import overlay_qss
 
 
 class ChannelTablePanel(QFrame):
@@ -17,6 +18,7 @@ class ChannelTablePanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("channelTablePanel")
+        self.setStyleSheet(overlay_qss("channelTablePanel"))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)

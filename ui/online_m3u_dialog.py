@@ -63,6 +63,7 @@ class OnlineM3uDialog(QDialog):
         button_layout.addWidget(self.save_button)
 
         self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("secondaryButton")
         self.cancel_button.setMinimumWidth(80)
         self.cancel_button.setMinimumHeight(32)
         self.cancel_button.clicked.connect(self.reject)

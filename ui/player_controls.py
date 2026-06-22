@@ -146,16 +146,20 @@ QSlider#barVolume::handle:vertical {
 
 _TRACK_POPUP_QSS = """
 #trackPopupCard {
-    background: #f4f4f6;
-    border: 1px solid #d9d9df;
+    background: qlineargradient(
+        x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(58, 68, 86, 238),
+        stop:1 rgba(22, 28, 37, 238)
+    );
+    border: 1px solid rgba(120, 180, 255, 145);
     border-radius: 10px;
 }
-QLabel#tiTitle { color: #1a1a1a; font-size: 14px; font-weight: 600; background: transparent; }
-QLabel#tiTitleSel { color: #2f6bd0; font-size: 14px; font-weight: 700; background: transparent; }
-QLabel#tiSub { color: #9a9aa0; font-size: 11px; background: transparent; }
+QLabel#tiTitle { color: #edf4ff; font-size: 14px; font-weight: 600; background: transparent; }
+QLabel#tiTitleSel { color: #8ed0ff; font-size: 14px; font-weight: 700; background: transparent; }
+QLabel#tiSub { color: #9fc9ff; font-size: 11px; background: transparent; }
 #trackItem { border-radius: 8px; background: transparent; }
-#trackItem:hover { background: #e6e6ec; }
-#trackItemSel { border-radius: 8px; background: #e1ebfb; }
+#trackItem:hover { background: rgba(120, 180, 255, 42); }
+#trackItemSel { border-radius: 8px; background: rgba(105, 178, 255, 85); }
 #trackItemDisabled { border-radius: 8px; background: transparent; }
 """
 
@@ -193,7 +197,7 @@ class TrackItem(QFrame):
 
 
 class TrackPopup(QFrame):
-    """浅色轨道弹窗（顶层 Popup 窗口），带高度展开动画。"""
+    """玻璃风轨道弹窗（顶层 Popup 窗口），带高度展开动画。"""
     item_selected = Signal(object)
 
     def __init__(self, parent=None):
@@ -319,14 +323,14 @@ class PlayerTopBar(QFrame):
         ]
         self._current_quality = "liu"
 
-        # 清晰度按钮（点击弹出浅色动画弹窗）
+        # 清晰度按钮（点击弹出玻璃风动画弹窗）
         self.quality_button = QToolButton()
         self.quality_button.setText("")
         self.quality_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.quality_button.clicked.connect(self._open_quality_popup)
         layout.addWidget(self.quality_button)
 
-        # 三个轨道下拉（点击弹出浅色动画弹窗）
+        # 三个轨道下拉（点击弹出玻璃风动画弹窗）
         self.video_button = self._make_track_button("", self.video_track_selected, "video")
         self.audio_button = self._make_track_button("", self.audio_track_selected, "audio")
         self.subtitle_button = self._make_track_button("", self.subtitle_track_selected, "subtitle")
