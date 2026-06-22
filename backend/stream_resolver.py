@@ -14,6 +14,12 @@ from utils.url_cleaning import clean_media_url
 
 DEFAULT_TIMEOUT = 15
 MAX_BODY_BYTES = 512 * 1024
+DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
+DEFAULT_CH_UA = '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"'
 
 _CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
@@ -211,6 +217,50 @@ def _guess_media_type(url: str, content_type: str, body_bytes: bytes) -> str:
     return "unknown"
 
 
+def _guess_direct_media_type(url: str) -> str:
+    """Return a media type when the URL itself is an explicit media URL."""
+    lower_url = (url or "").lower()
+    if ".m3u8" in lower_url:
+        return "hls"
+    if ".mpd" in lower_url:
+        return "dash"
+    if ".flv" in lower_url:
+        return "flv"
+    if ".mp4" in lower_url or ".m4v" in lower_url or ".mov" in lower_url:
+        return "mp4"
+    if ".ts" in lower_url:
+        return "hls"
+    return "unknown"
+
+
+def _is_explicit_media_url(url: str) -> bool:
+    """Return whether the URL already points at a known media resource."""
+    return _guess_direct_media_type(url) != "unknown"
+
+
+def _direct_media_result(
+    url: str,
+    *,
+    http_status: int | None = None,
+    final_url: str = "",
+    message: str = "explicit media url passthrough",
+) -> dict[str, Any]:
+    """Build a successful resolver result for explicit media URLs."""
+    resolved_url = clean_media_url(final_url or url)
+    media_type = _guess_direct_media_type(resolved_url)
+    if media_type == "unknown":
+        media_type = _guess_direct_media_type(url)
+    return _make_result(
+        status="ok",
+        media_url=resolved_url,
+        media_type=media_type,
+        http_status=http_status,
+        final_url=resolved_url,
+        message=message,
+        resolved_from="direct",
+    )
+
+
 def _looks_like_html(content_type: str, body_text: str) -> bool:
     lower_type = (content_type or "").lower()
     if "text/html" in lower_type or "application/xhtml" in lower_type:
@@ -227,6 +277,17 @@ def _normalize_page_url(url: str) -> str:
             (
                 parsed.scheme or "https",
                 "www.gdtv.cn",
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    if parsed.scheme == "http" and host.endswith(".xhscdn.com") and "sns-video" in host:
+        return urllib.parse.urlunparse(
+            (
+                "https",
+                parsed.netloc,
                 parsed.path,
                 parsed.params,
                 parsed.query,
@@ -394,6 +455,54 @@ def _request_context(channel: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _add_default_header(req: urllib.request.Request, existing_headers: dict[str, str], key: str, value: str) -> None:
+    """Add a browser-like request header unless the channel already supplied it."""
+    lower_existing = {str(name).lower() for name in existing_headers}
+    if key.lower() not in lower_existing:
+        req.add_header(key, value)
+
+
+def _add_browser_like_headers(
+    req: urllib.request.Request,
+    existing_headers: dict[str, str],
+    *,
+    url: str,
+    method: str,
+    use_range: bool,
+) -> None:
+    """Make resolver probes look like normal Chromium navigation/media requests."""
+    explicit_media = _is_explicit_media_url(url)
+    _add_default_header(req, existing_headers, "User-Agent", DEFAULT_BROWSER_USER_AGENT)
+    _add_default_header(req, existing_headers, "Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+    _add_default_header(req, existing_headers, "sec-ch-ua", DEFAULT_CH_UA)
+    _add_default_header(req, existing_headers, "sec-ch-ua-mobile", "?0")
+    _add_default_header(req, existing_headers, "sec-ch-ua-platform", '"Windows"')
+    _add_default_header(req, existing_headers, "DNT", "1")
+    _add_default_header(req, existing_headers, "Connection", "keep-alive")
+
+    if explicit_media:
+        _add_default_header(req, existing_headers, "Accept", "*/*")
+        _add_default_header(req, existing_headers, "Sec-Fetch-Site", "none")
+        _add_default_header(req, existing_headers, "Sec-Fetch-Mode", "no-cors")
+        _add_default_header(req, existing_headers, "Sec-Fetch-Dest", "video")
+        _add_default_header(req, existing_headers, "Pragma", "no-cache")
+        _add_default_header(req, existing_headers, "Cache-Control", "no-cache")
+    else:
+        _add_default_header(
+            req,
+            existing_headers,
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        )
+        _add_default_header(req, existing_headers, "Sec-Fetch-Site", "none")
+        _add_default_header(req, existing_headers, "Sec-Fetch-Mode", "navigate")
+        _add_default_header(req, existing_headers, "Sec-Fetch-Dest", "document")
+        _add_default_header(req, existing_headers, "Upgrade-Insecure-Requests", "1")
+
+    if use_range:
+        _add_default_header(req, existing_headers, "Range", "bytes=0-4095")
+
+
 def _build_opener(proxy_value: str) -> urllib.request.OpenerDirector:
     handlers: list[Any] = []
     if proxy_value:
@@ -411,10 +520,7 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
     req = urllib.request.Request(url, method=method)
     for key, value in ctx["headers"].items():
         req.add_header(key, value)
-    if "User-Agent" not in ctx["headers"]:
-        req.add_header("User-Agent", "Mozilla/5.0")
-    if use_range:
-        req.add_header("Range", "bytes=0-4095")
+    _add_browser_like_headers(req, ctx["headers"], url=url, method=method, use_range=use_range)
 
     body_bytes = b""
     body_text = ""
@@ -559,15 +665,27 @@ def resolve_channel(
 
     normalized_channel = dict(channel or {})
     normalized_channel["Manifest"] = url
+    explicit_media_url = _is_explicit_media_url(url)
 
     _notify(progress_callback, "正在检测直播链接...")
     if _is_cancelled(cancel_callback):
         return _cancelled_result(url)
-    response_info = _perform_request(normalized_channel, "HEAD")
+    if explicit_media_url:
+        _notify(progress_callback, "正在以浏览器媒体请求检测直连地址...")
+        response_info = _perform_request(normalized_channel, "GET", use_range=True)
+    else:
+        response_info = _perform_request(normalized_channel, "HEAD")
     http_status = response_info.get("http_status")
     status_class = _classify_http_status(http_status)
 
-    if http_status == 405:
+    if explicit_media_url and status_class in {"request_error", "client_error", "unknown"}:
+        _notify(progress_callback, "直连媒体地址浏览器探测不可用，正在重试 GET 检测...")
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(url)
+        response_info = _perform_request(normalized_channel, "GET", use_range=True)
+        http_status = response_info.get("http_status")
+        status_class = _classify_http_status(http_status)
+    elif http_status == 405:
         _notify(progress_callback, "源站不支持 HEAD，正在改用 GET 检测...")
         if _is_cancelled(cancel_callback):
             return _cancelled_result(url)
@@ -593,6 +711,14 @@ def resolve_channel(
         return _cancelled_result(url)
 
     if response_info.get("error"):
+        if explicit_media_url:
+            result = _direct_media_result(
+                url,
+                final_url=response_info.get("final_url") or url,
+                message=f"explicit media url passthrough after probe error: {response_info['error']}",
+            )
+            _set_cached(normalized_channel, result)
+            return result
         result = _make_result(
             status="error",
             http_status=response_info.get("http_status"),
@@ -618,6 +744,15 @@ def resolve_channel(
         return result
 
     if status_class == "server_error":
+        if explicit_media_url:
+            result = _direct_media_result(
+                url,
+                http_status=http_status,
+                final_url=final_url,
+                message="explicit media url passthrough after server-side probe error",
+            )
+            _set_cached(normalized_channel, result)
+            return result
         result = _make_result(
             status="error",
             http_status=http_status,
@@ -628,6 +763,15 @@ def resolve_channel(
         return result
 
     if status_class == "request_error":
+        if explicit_media_url and http_status not in {401, 403, 404, 410, 451}:
+            result = _direct_media_result(
+                url,
+                http_status=http_status,
+                final_url=final_url,
+                message="explicit media url passthrough after request probe rejection",
+            )
+            _set_cached(normalized_channel, result)
+            return result
         message_map = {
             401: "源地址存在，但当前请求未授权",
             403: "源地址存在，但当前请求被拒绝",
@@ -680,6 +824,17 @@ def resolve_channel(
             final_url=final_url,
             message=f"resolved from {media_type}",
             resolved_from=resolved_from,
+        )
+        _set_cached(normalized_channel, result)
+        return result
+
+    if explicit_media_url:
+        _notify(progress_callback, "已识别直连媒体地址，正在准备播放...")
+        result = _direct_media_result(
+            url,
+            http_status=http_status,
+            final_url=final_url,
+            message="resolved from explicit media url",
         )
         _set_cached(normalized_channel, result)
         return result

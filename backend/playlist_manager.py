@@ -301,6 +301,10 @@ class PlaylistManager:
             return "dash"
         if ".m3u8" in lower_url or "hls" in lower_url:
             return "hls"
+        if ".mp4" in lower_url or ".m4v" in lower_url or ".mov" in lower_url:
+            return "mp4"
+        if ".flv" in lower_url:
+            return "flv"
         if lower_url.startswith("rtsp://"):
             return "rtsp"
         if lower_url.startswith("rtmp://"):

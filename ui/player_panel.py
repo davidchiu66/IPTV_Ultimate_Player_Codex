@@ -934,6 +934,8 @@ class MpvVideoWidget(QWidget):
                 return "mpd"
             if "hls" in manifest_type or "m3u8" in manifest_type:
                 return "hls"
+            if manifest_type in {"mp4", "flv"}:
+                return manifest_type
             if manifest_type in {"rtsp", "rtmp"}:
                 return manifest_type
         lower_url = (url or "").lower()
@@ -941,6 +943,10 @@ class MpvVideoWidget(QWidget):
             return "mpd"
         if ".m3u8" in lower_url or "hls" in lower_url:
             return "hls"
+        if ".mp4" in lower_url or ".m4v" in lower_url or ".mov" in lower_url:
+            return "mp4"
+        if ".flv" in lower_url:
+            return "flv"
         if lower_url.startswith("rtsp://"):
             return "rtsp"
         if lower_url.startswith("rtmp://"):
