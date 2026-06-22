@@ -90,8 +90,8 @@ jobs:
           DefaultDirName={autopf}\{#MyAppName}
           DefaultGroupName={#MyAppName}
           DisableProgramGroupPage=yes
-          LicenseFile=LICENSE
-          OutputDir=installer
+          LicenseFile=..\LICENSE
+          OutputDir=.
           OutputBaseFilename=IPTVPlayer-Setup-{#MyAppVersion}
           Compression=lzma
           SolidCompression=yes
@@ -106,10 +106,11 @@ jobs:
           Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
           [Files]
-          Source: "dist\{#MyAppDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-          Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "readme_en.MD"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\dist\{#MyAppDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\readme_en.MD"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\ABOUT.md"; DestDir: "{app}"; Flags: ignoreversion
 
           [Dirs]
           Name: "{app}\Channels"; Flags: uninsneveruninstall
