@@ -8,8 +8,6 @@ from utils.helpers import b64url_to_hex
 class PlaylistManager:
     def __init__(self, channels_dir="Channels"):
         self.channels_dir = os.path.abspath(channels_dir)
-        if not os.path.exists(self.channels_dir):
-            os.makedirs(self.channels_dir)
         self.streams = []
         self.config_data = {}
         self.list_key = "Channels"

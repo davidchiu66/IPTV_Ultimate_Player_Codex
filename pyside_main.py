@@ -100,7 +100,10 @@ def setup_session_logging():
 
 
 def ensure_directories():
-    dirs = ["Channels", "EPGs", "frontend", "backend", "gui", "utils", "ui", "models"]
+    # Only create runtime data directories. Source/package directories are
+    # bundled under _internal in packaged builds and should not appear as empty
+    # folders beside the installed executable.
+    dirs = ["EPGs"]
     for directory in dirs:
         if not os.path.exists(directory):
             os.makedirs(directory)

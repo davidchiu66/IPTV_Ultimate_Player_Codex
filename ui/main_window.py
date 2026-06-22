@@ -167,7 +167,8 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._refresh_favorites_views()
         self._refresh_playlist_overlay()
-        self.refresh_directory(self.playlist_mgr.channels_dir)
+        if os.path.isdir(self.playlist_mgr.channels_dir):
+            self.refresh_directory(self.playlist_mgr.channels_dir)
         self.load_local_epg()
 
     def center_on_screen(self):

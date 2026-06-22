@@ -147,7 +147,6 @@ jobs:
           Source: "..\docs\assets\icons\app.ico"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion
 
           [Dirs]
-          Name: "{app}\Channels"; Flags: uninsneveruninstall
           Name: "{app}\EPGs"; Flags: uninsneveruninstall
           Name: "{app}\config"; Flags: uninsneveruninstall
           Name: "{app}\logs"; Flags: uninsneveruninstall
