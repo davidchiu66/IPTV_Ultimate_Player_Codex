@@ -15,11 +15,11 @@ from ui.dialog_style import apply_light_dialog_style
 class ChannelEditorDialog(QDialog):
     def __init__(self, channel, default_category="", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("编辑频道")
+        self._source = dict(channel or {})
+        title = "编辑频道" if self._source else "添加频道"
+        self.setWindowTitle(f"{title} - IPTV 播放器")
         self.resize(560, 620)
         apply_light_dialog_style(self)
-
-        self._source = dict(channel or {})
 
         layout = QVBoxLayout(self)
         form = QFormLayout()

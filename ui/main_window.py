@@ -69,6 +69,7 @@ from utils.url_cleaning import clean_media_url
 from utils.i18n import get_language, set_language
 from utils.app_paths import resource_path, runtime_path
 from ui.theme import APP_QSS
+from ui.window_chrome import handle_frameless_native_event, install_custom_window_chrome
 
 
 HTML_FILE = "live.html"
@@ -1031,6 +1032,14 @@ class MainWindow(QMainWindow):
     def _apply_styles(self):
         """Apply the shared glassmorphism application theme."""
         self.setStyleSheet(APP_QSS)
+        install_custom_window_chrome(self, show_window_controls=True, resizable=False)
+
+    def nativeEvent(self, event_type, message):  # type: ignore[override]
+        """Keep invisible resize borders after switching to a frameless title bar."""
+        handled, result = handle_frameless_native_event(self, event_type, message)
+        if handled:
+            return True, result
+        return super().nativeEvent(event_type, message)
 
     def refresh_directory(self, dir_path):
         if not os.path.isdir(dir_path):

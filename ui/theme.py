@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ui.window_chrome import install_custom_window_chrome
+
 
 PANEL_QSS = """
     background: qlineargradient(
@@ -402,3 +404,4 @@ def apply_glass_dialog_style(dialog) -> None:
     """Apply the shared glass style to standalone dialogs."""
     dialog.setObjectName("glassDialog")
     dialog.setStyleSheet(GLASS_DIALOG_QSS)
+    install_custom_window_chrome(dialog, show_window_controls=False, resizable=False)
