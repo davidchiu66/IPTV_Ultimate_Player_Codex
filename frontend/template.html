@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>私人 DRM 直播控制台 (UI 尊享版)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mux.js/6.3.0/mux.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.5/shaka-player.ui.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.5/controls.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    
+    <style>
+        /* 现代化色彩与排版变量 */
+        :root { 
+            --bg-color: #0b0c10; 
+            --panel-bg: #151720; 
+            --card-bg: #1c1e2b;
+            --text-color: #e4e6eb; 
+            --text-muted: #8892b0;
+            --highlight: #00adb5; 
+            --highlight-glow: rgba(0, 173, 181, 0.2);
+            --hover-bg: rgba(255, 255, 255, 0.05); 
+            --border-color: rgba(255, 255, 255, 0.08);
+            --font-main: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+        }
+        
+        body { margin: 0; font-family: var(--font-main); background-color: var(--bg-color); color: var(--text-color); display: flex; height: 100vh; overflow: hidden; }
+        
+        /* 优雅的滚动条 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.15); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background-color: var(--highlight); }
+
+        /* ================= 侧边栏重构 ================= */
+        #sidebar { width: 360px; background-color: var(--panel-bg); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; box-shadow: 5px 0 25px rgba(0,0,0,0.4); z-index: 2; flex-shrink: 0; }
+        
+        .header { padding: 25px 20px 15px; font-size: 1.4rem; font-weight: 800; background: transparent; text-align: left; color: #fff; letter-spacing: 0.5px; display: flex; align-items: center; gap: 10px;}
+        .header::before { content: ''; display: block; width: 4px; height: 20px; background: var(--highlight); border-radius: 4px; }
+
+        /* 搜索与开关面板 (呼吸感网格布局) */
+        .search-container { padding: 0 20px 20px; border-bottom: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 15px;}
+        
+        #search-box { width: 100%; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--border-color); background: rgba(0,0,0,0.2); color: white; outline: none; box-sizing: border-box; font-size: 0.95em; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);}
+        #search-box:focus { border-color: var(--highlight); background: rgba(0, 173, 181, 0.05); box-shadow: 0 0 0 3px var(--highlight-glow); }
+        
+        .controls-row { display: flex; justify-content: space-between; align-items: center; padding: 0 5px; }
+        
+        /* 现代化滑动开关 (iOS Style) */
+        .toggle-wrapper { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-muted); font-size: 0.85em; font-weight: 500; user-select: none; transition: color 0.2s;}
+        .toggle-wrapper:hover { color: #fff; }
+        .toggle-wrapper input { display: none; }
+        .toggle-slider { width: 36px; height: 20px; background-color: rgba(255,255,255,0.1); border-radius: 20px; position: relative; transition: 0.3s; border: 1px solid transparent;}
+        .toggle-slider::after { content: ''; position: absolute; width: 14px; height: 14px; background-color: #fff; border-radius: 50%; top: 2px; left: 3px; transition: 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.2);}
+        .toggle-wrapper input:checked + .toggle-slider { background-color: var(--highlight); }
+        .toggle-wrapper input:checked + .toggle-slider::after { transform: translateX(16px); }
+
+        /* 频道列表区 */
+        #channel-list-container { flex: 1; overflow-y: auto; padding: 10px 0;}
+        #channel-list { list-style: none; padding: 0; margin: 0; }
+        
+        .group-title { padding: 12px 20px; font-size: 0.85em; font-weight: 700; color: var(--text-muted); position: sticky; top: 0; z-index: 1; background: rgba(21, 23, 32, 0.95); backdrop-filter: blur(8px); cursor: pointer; user-select: none; transition: color 0.2s; letter-spacing: 0.5px;}
+        .group-title:hover { color: var(--highlight); }
+        .group-container.collapsed .channel-item { display: none !important; }
+        
+        /* 频道项：卡片悬浮样式 */
+        .channel-item { margin: 4px 12px; padding: 10px 12px; cursor: pointer; border-radius: 10px; transition: all 0.2s ease; font-size: 0.95em; position: relative; display: flex; align-items: center; border: 1px solid transparent;}
+        .channel-item:hover { background-color: var(--hover-bg); border-color: rgba(255,255,255,0.05); transform: translateX(2px);}
+        .channel-item.active { background: linear-gradient(90deg, rgba(0, 173, 181, 0.15) 0%, rgba(0, 173, 181, 0.02) 100%); border-left: 4px solid var(--highlight); color: #fff; font-weight: bold; border-radius: 4px 10px 10px 4px; box-shadow: inset 2px 0 0 0 var(--highlight);}
+        
+        .channel-logo { width: 34px; height: 34px; object-fit: contain; margin-right: 12px; border-radius: 8px; background: rgba(0,0,0,0.2); flex-shrink: 0; padding: 2px;}
+        .channel-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 50px;}
+        
+        /* 精致的小标签 */
+        .drm-tag, .proxy-tag { position: absolute; top: 50%; transform: translateY(-50%); font-size: 0.65em; font-weight: 800; padding: 3px 6px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px;}
+        .drm-tag { right: 12px; background: rgba(255,255,255,0.1); color: #bbb; }
+        .proxy-tag { right: 48px; background: rgba(76, 175, 80, 0.2); color: #4CAF50; border: 1px solid rgba(76, 175, 80, 0.3);}
+        
+        /* ================= 主视区重构 ================= */
+        #main-content { flex-grow: 1; display: flex; flex-direction: column; background-color: #000; overflow: hidden; min-width: 0; position: relative;}
+        
+        #video-container { flex-grow: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: #000; }
+        video { width: 100%; height: 100%; object-fit: contain; outline: none; background: #000; }
+        
+        #webview-container { display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 5; background: #000; }
+        #webview { width: 100%; height: 100%; border: none; }
+
+        /* 毛玻璃 OSD 悬浮窗统一样式 */
+        .glass-panel {
+            background: rgba(15, 17, 26, 0.65);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            color: #fff;
+            position: absolute;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        #status-bar { top: 25px; left: 25px; padding: 12px 20px; font-size: 0.95rem; font-weight: 500; opacity: 1; transition: opacity 0.8s ease-in-out;}
+        
+        #clock-container { display: none; top: 25px; right: 25px; padding: 10px 18px; font-family: monospace, var(--font-main); font-size: 1.05rem; font-weight: 700; letter-spacing: 1px;}
+
+        #epg-container { bottom: 80px; left: 25px; border-left: 4px solid var(--highlight); padding: 15px 25px; max-width: 50%; opacity: 0; transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1); transform: translateY(10px);}
+        #epg-container.show { opacity: 1; transform: translateY(0); }
+        #epg-current { font-weight: 800; font-size: 1.2rem; margin-bottom: 6px; text-shadow: 0 2px 4px rgba(0,0,0,0.5); display: flex; align-items: center; gap: 8px;}
+        #epg-current::before { content: ''; display: inline-block; width: 8px; height: 8px; background: #ff5252; border-radius: 50%; box-shadow: 0 0 8px #ff5252; animation: pulse 2s infinite;}
+        #epg-next { color: var(--text-muted); font-size: 0.95rem; font-weight: 500; padding-left: 16px;}
+        
+        @keyframes pulse { 0% { transform: scale(0.95); opacity: 0.8; } 50% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(0.95); opacity: 0.8; } }
+
+        /* ================= 下沉式全量 EPG 舱重构 ================= */
+        #bottom-epg-panel { display: none; height: 32%; min-height: 220px; max-height: 400px; flex-direction: column; background: var(--card-bg); border-top: 1px solid rgba(255,255,255,0.05); flex-shrink: 0; z-index: 10; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
+        
+        #bottom-epg-header { padding: 12px 25px; font-weight: 800; font-size: 1.05em; background: rgba(0,0,0,0.2); color: var(--highlight); border-bottom: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; letter-spacing: 0.5px;}
+        
+        #bottom-epg-list { flex: 1; overflow-y: auto; padding: 10px 0; margin: 0; list-style: none; scroll-behavior: smooth; }
+        
+        .epg-row { padding: 12px 25px; border-bottom: 1px solid rgba(255,255,255,0.02); display: flex; align-items: center; transition: background-color 0.2s; gap: 20px;}
+        .epg-row:hover { background-color: rgba(255,255,255,0.02); }
+        .epg-row.active { background: linear-gradient(90deg, rgba(0, 173, 181, 0.1) 0%, transparent 100%); border-left: 4px solid var(--highlight); padding-left: 21px;}
+        
+        .epg-time { width: 130px; font-size: 0.95em; color: var(--text-muted); flex-shrink: 0; font-family: monospace; font-weight: 600;}
+        .epg-row.active .epg-time { color: var(--highlight); }
+        
+        .epg-title { font-size: 1.05em; color: #ccc; flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;}
+        .epg-row.active .epg-title { color: #fff; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div class="header">📺 IPTV Studio</div>
+        <div class="search-container">
+            <input type="text" id="search-box" placeholder="🔍 搜索频道名称..." onkeyup="filterChannels()">
+            <div class="controls-row">
+                <label class="toggle-wrapper" title="直连失败时自动尝试代理穿透">
+                    <span>🛡️ 智能代理</span>
+                    <input type="checkbox" id="smart-proxy-toggle">
+                    <div class="toggle-slider"></div>
+                </label>
+                <label class="toggle-wrapper" title="显示/隐藏右上角时钟">
+                    <span>🕒 悬浮时钟</span>
+                    <input type="checkbox" id="clock-toggle" onchange="toggleClock()" checked>
+                    <div class="toggle-slider"></div>
+                </label>
+            </div>
+        </div>
+        <div id="channel-list-container">
+            <ul id="channel-list"></ul>
+        </div>
+    </div>
+    
+    <div id="main-content">
+        <div id="video-container" data-shaka-player-container>
+            <div id="status-bar" class="glass-panel">👈 请在左侧选择频道开始播放</div>
+            <div id="clock-container" class="glass-panel"></div>
+            
+            <video id="video" data-shaka-player controls autoplay></video>
+            
+            <div id="webview-container">
+                <iframe id="webview" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>
+            </div>
+            
+            <div id="epg-container" class="glass-panel">
+                <div id="epg-current">加载节目单中...</div>
+                <div id="epg-next"></div>
+            </div>
+        </div>
+        
+        <div id="bottom-epg-panel">
+            <div id="bottom-epg-header">📅 频道节目时间表 <span id="epg-header-title" style="color:#fff; font-weight:600;">等待加载...</span></div>
+            <ul id="bottom-epg-list"></ul>
+        </div>
+    </div>
+
+    <script>
+        const channelsData = {{CHANNELS_JSON}};
+        
+        let shakaPlayer = null, hlsPlayer = null, mpegtsPlayer = null; 
+        let currentActiveChannel = null; 
+        
+        window.activePlayId = 0;
+        let epgDataTimer = null, osdForceShowUntil = 0;
+        let currentEpgProg = null, nextEpgProg = null;
+        let statusHideTimer = null, clockTimer = null; 
+
+        function cleanMediaUrl(value) {
+            let text = String(value || '').trim();
+            if (!text) return '';
+            text = text
+                .replace(/\\\//g, '/')
+                .replace(/\\u0026/ig, '&')
+                .replace(/\\u002f/ig, '/')
+                .replace(/\\u003f/ig, '?')
+                .replace(/\\u003d/ig, '=')
+                .replace(/\\u003a/ig, ':')
+                .replace(/\\u0025/ig, '%');
+            while (/[\\'"`,;\)\]\}]+$/.test(text)) {
+                text = text.slice(0, -1).trim();
+            }
+            while (/^[`'"\(\[\{]+/.test(text)) {
+                text = text.slice(1).trim();
+            }
+            return text;
+        }
+
+        class CustomPlaylistLoader extends Hls.DefaultConfig.loader {
+            constructor(config) {
+                super(config);
+                let load = this.load.bind(this);
+                this.load = function(context, config, callbacks) {
+                    let originalOnSuccess = callbacks.onSuccess;
+                    callbacks.onSuccess = function(response, stats, context, networkDetails) {
+                        if (currentActiveChannel && currentActiveChannel.useProxy && response.data) {
+                            let realUrl = cleanMediaUrl(context.url);
+                            if (realUrl.includes('/proxy?url=')) {
+                                try { realUrl = cleanMediaUrl(decodeURIComponent(realUrl.split('url=')[1].split('&')[0])); } catch(e) {}
+                            }
+                            if (networkDetails && networkDetails.getResponseHeader) {
+                                let finalUrl = networkDetails.getResponseHeader('X-Final-Url');
+                                if (finalUrl) realUrl = cleanMediaUrl(finalUrl);
+                                let proxyErr = networkDetails.getResponseHeader('X-Proxy-Error-Status');
+                                if (proxyErr) {
+                                    showStatus(`❌ 播放中断: 目标源异常或被拦截 (HTTP ${proxyErr})`, true);
+                                    return; 
+                                }
+                            }
+                            if (realUrl && typeof response.data === 'string') {
+                                let baseUrl = realUrl.substring(0, realUrl.lastIndexOf('/') + 1);
+                                let origin = new URL(realUrl).origin;
+                                let lines = response.data.split('\n');
+                                const makeProxyUrl = (absUri) => {
+                                    absUri = cleanMediaUrl(absUri);
+                                    let pUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(absUri);
+                                    if (currentActiveChannel.userAgent) pUrl += '&ua=' + encodeURIComponent(currentActiveChannel.userAgent);
+                                    if (currentActiveChannel.referer) pUrl += '&ref=' + encodeURIComponent(currentActiveChannel.referer);
+                                    return pUrl;
+                                };
+                                for (let i = 0; i < lines.length; i++) {
+                                    let line = lines[i].trim();
+                                    if (line && !line.startsWith('#') && !line.startsWith('data:')) {
+                                        if (line.startsWith('http')) lines[i] = makeProxyUrl(line);
+                                        else {
+                                            let absUri = line.startsWith('/') ? (origin + line) : (baseUrl + line);
+                                            lines[i] = makeProxyUrl(absUri);
+                                        }
+                                    } 
+                                    else if (line.startsWith('#EXT-X-') && line.includes('URI="')) {
+                                        lines[i] = line.replace(/URI="([^"]+)"/g, function(match, uri) {
+                                            if (uri.startsWith('data:')) return match;
+                                            let absUri = uri.startsWith('http') ? uri : (uri.startsWith('/') ? (origin + uri) : (baseUrl + uri));
+                                            return 'URI="' + makeProxyUrl(absUri) + '"';
+                                        });
+                                    }
+                                }
+                                response.data = lines.join('\n');
+                                context.url = realUrl; 
+                            }
+                        }
+                        originalOnSuccess(response, stats, context, networkDetails);
+                    };
+                    load(context, config, callbacks);
+                };
+            }
+        }
+
+        async function initPlayer() {
+            shaka.polyfill.installAll();
+            const video = document.getElementById('video');
+            const videoContainer = document.getElementById('video-container');
+            
+            shakaPlayer = new shaka.Player(video);
+            const ui = new shaka.ui.Overlay(shakaPlayer, videoContainer, video);
+            ui.configure({
+                'controlPanelElements': ['play_pause', 'time_and_duration', 'spacer', 'mute', 'volume', 'fullscreen', 'overflow_menu'],
+                'overflowMenuButtons': ['quality', 'picture_in_picture', 'language', 'playback_rate']
+            });
+
+						shakaPlayer.addEventListener('error', (e) => {
+                let detail = e.detail || e;
+                // 【核心修复】：把 object 序列化，方便在控制台查看真实的深层原因
+                console.error("Shaka 内部错误捕获:", JSON.stringify(detail));
+                let errCode = detail.code ? detail.code : '未知';
+                
+                let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
+                if ((errCode === 1001 || errCode === 1002) && !currentActiveChannel.useProxy && smartProxyEnabled) {
+                    showStatus(`⚠️ 触发流媒体跨域拦截，启动智能代理穿透...`, false);
+                    currentActiveChannel.useProxy = true;
+                    playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
+                    return;
+                }
+
+                let httpStatus = null;
+                if (detail.data && Array.isArray(detail.data)) {
+                    for (let d of detail.data) {
+                        if (typeof d === 'number' && d >= 400 && d <= 599) { httpStatus = d; break; }
+                    }
+                    if (!httpStatus && typeof detail.data[1] === 'number' && detail.data[1] >= 400) httpStatus = detail.data[1];
+                }
+                
+                let statusMsg = "";
+                if (httpStatus) statusMsg = `目标源拒绝访问或服务异常 (HTTP ${httpStatus})`;
+                else if (errCode === 1002) statusMsg = `服务器返回无效状态 (BAD_HTTP_STATUS)`;
+                else if (errCode === 1001) statusMsg = `网络连接断开或被源站拦截 (疑似 HTTP 403/503)`;
+                else if (errCode === 4000) statusMsg = `源内容解析失败 (疑似被重定向到了报错网页)`;
+                else if (errCode === 4032) statusMsg = `浏览器不支持该视频编码`;
+                // 【核心修复】：专门翻译 6001 DRM 缺失错误
+                else if (errCode === 6001 || errCode === 6002) statusMsg = `内嵌内核缺少 Widevine DRM 证书 (请点击左上方 🌐 图标在外部 Chrome 打开)`;
+                else if (errCode >= 6000 && errCode < 7000) statusMsg = `DRM 授权解密失败`;
+                else statusMsg = `核心遭遇异常`;
+                
+                showStatus(`❌ 播放中断: ${statusMsg} (错误码: ${errCode})`, true);
+            });
+
+            shakaPlayer.getNetworkingEngine().registerRequestFilter(function(type, request) {
+                if (currentActiveChannel && currentActiveChannel.useProxy && !request.uris[0].includes('/proxy?url=')) {
+                    let proxyUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(request.uris[0]);
+                    if (currentActiveChannel.userAgent) proxyUrl += '&ua=' + encodeURIComponent(currentActiveChannel.userAgent);
+                    if (currentActiveChannel.referer) proxyUrl += '&ref=' + encodeURIComponent(currentActiveChannel.referer);
+                    request.uris[0] = proxyUrl;
+                }
+            });
+
+            shakaPlayer.getNetworkingEngine().registerResponseFilter(function(type, response) {
+                if (currentActiveChannel && currentActiveChannel.useProxy) {
+                    let proxyUri = response.uri || '';
+                    let realUrl = '';
+                    if (proxyUri.includes('/proxy?url=')) {
+                        try { realUrl = decodeURIComponent(proxyUri.substring(proxyUri.indexOf('?') + 1).split('url=')[1].split('&')[0]); } catch(e) {}
+                    }
+                    if (response.headers && response.headers['x-proxy-error-status']) {
+                        throw new shaka.util.Error(
+                            shaka.util.Error.Severity.CRITICAL, shaka.util.Error.Category.NETWORK,
+                            shaka.util.Error.Code.BAD_HTTP_STATUS, realUrl, parseInt(response.headers['x-proxy-error-status']), 'Proxy Intercepted Error'
+                        );
+                    }
+                    if (response.headers && response.headers['x-final-url']) realUrl = response.headers['x-final-url'];
+                    if (realUrl) response.uri = realUrl;
+
+                    if (response.data && realUrl) {
+                        let contentType = (response.headers && response.headers['content-type']) ? response.headers['content-type'].toLowerCase() : '';
+                        let isM3u8 = realUrl.includes('.m3u8') || contentType.includes('mpegurl');
+                        if (isM3u8) {
+                            try {
+                                let manifestText = new TextDecoder().decode(response.data);
+                                if (manifestText.includes('#EXTM3U')) {
+                                    let baseUrl = realUrl.substring(0, realUrl.lastIndexOf('/') + 1);
+                                    let origin = new URL(realUrl).origin;
+                                    let lines = manifestText.split('\n');
+                                    for (let i = 0; i < lines.length; i++) {
+                                        let line = lines[i].trim();
+                                        if (line && !line.startsWith('#') && !line.startsWith('http')) {
+                                            lines[i] = line.startsWith('/') ? (origin + line) : (baseUrl + line);
+                                        } else if (line.startsWith('#EXT-X-') && line.includes('URI="')) {
+                                            lines[i] = line.replace(/URI="([^"]+)"/g, function(match, uri) {
+                                                if (!uri.startsWith('http')) return 'URI="' + (uri.startsWith('/') ? (origin + uri) : (baseUrl + uri)) + '"';
+                                                return match;
+                                            });
+                                        }
+                                    }
+                                    response.data = new TextEncoder().encode(lines.join('\n'));
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+            });
+
+            renderChannelList();
+            setInterval(updateOsdVisibility, 1000);
+            toggleClock();
+        }
+
+        function updateClock() {
+            const now = new Date();
+            const yyyy = now.getFullYear(), mm = String(now.getMonth() + 1).padStart(2, '0'), dd = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0'), min = String(now.getMinutes()).padStart(2, '0'), ss = String(now.getSeconds()).padStart(2, '0');
+            const days = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+            document.getElementById('clock-container').innerText = `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss} ${days[now.getDay()]}`;
+        }
+
+        function toggleClock() {
+            const clockEl = document.getElementById('clock-container');
+            if (document.getElementById('clock-toggle').checked) {
+                clockEl.style.display = 'block';
+                updateClock();
+                if (!clockTimer) clockTimer = setInterval(updateClock, 1000);
+            } else {
+                clockEl.style.display = 'none';
+                if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+            }
+        }
+
+        function showStatus(text, isError=false) {
+            const bar = document.getElementById('status-bar');
+            bar.innerText = text;
+            // 更新更符合现代 UI 的错误颜色表现
+            if(isError) {
+                bar.style.color = '#ff5252';
+                bar.style.borderLeft = '4px solid #ff5252';
+                bar.style.background = 'rgba(255, 0, 0, 0.1)';
+            } else {
+                bar.style.color = '#ffffff';
+                bar.style.borderLeft = '4px solid var(--highlight)';
+                bar.style.background = 'rgba(15, 17, 26, 0.65)';
+            }
+            
+            bar.style.opacity = '1';
+            if (statusHideTimer) clearTimeout(statusHideTimer);
+            if (!isError) statusHideTimer = setTimeout(() => { bar.style.opacity = '0'; }, 15000); // 正常提示15秒消隐
+        }
+        
+        function safePlay(videoElement, expectedPlayId) {
+            if (window.activePlayId !== expectedPlayId) return; 
+            const playPromise = videoElement.play();
+            if (playPromise !== undefined) playPromise.catch(error => {});
+        }
+
+        function filterChannels() {
+            const query = document.getElementById('search-box').value.toLowerCase();
+            document.querySelectorAll('.group-container').forEach(group => {
+                let hasVisible = false;
+                group.querySelectorAll('.channel-item').forEach(item => {
+                    const chName = item.querySelector('.channel-name').innerText.toLowerCase();
+                    if (chName.includes(query)) { item.style.display = 'flex'; hasVisible = true; } 
+                    else { item.style.display = 'none'; }
+                });
+                if (query.trim() !== '') {
+                    group.classList.remove('collapsed');
+                    const groupTitle = group.querySelector('.group-title');
+                    if(groupTitle) groupTitle.innerText = groupTitle.innerText.replace('📁', '📂');
+                }
+                group.style.display = hasVisible ? 'block' : 'none';
+            });
+        }
+
+        function renderChannelList() {
+            const listElement = document.getElementById('channel-list');
+            const groups = {};
+            channelsData.forEach((ch, idx) => {
+                const sourceIndex = Number.isInteger(ch.sourceIndex) ? ch.sourceIndex : idx;
+                ch.originalIndex = idx;
+                ch.sourceIndex = sourceIndex;
+                const cat = ch.category || '未分组';
+                if(!groups[cat]) groups[cat] = [];
+                groups[cat].push({...ch, originalIndex: idx, sourceIndex});
+            });
+
+            for (const [groupName, groupChannels] of Object.entries(groups)) {
+                const groupContainer = document.createElement('div');
+                groupContainer.className = 'group-container';
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'group-title';
+                groupDiv.innerText = `📂 ${groupName} (${groupChannels.length})`;
+                groupDiv.onclick = function() {
+                    const isCollapsed = groupContainer.classList.toggle('collapsed');
+                    groupDiv.innerText = isCollapsed ? `📁 ${groupName} (${groupChannels.length})` : `📂 ${groupName} (${groupChannels.length})`;
+                };
+                groupContainer.appendChild(groupDiv);
+
+                groupChannels.forEach(ch => {
+                    const li = document.createElement('li');
+                    li.className = 'channel-item';
+                    let imgHtml = ch.logo ? `<img class="channel-logo" src="${ch.logo}" loading="lazy" onerror="this.style.display='none'">` : `<div class="channel-logo" style="display:flex; justify-content:center; align-items:center; font-size:1.2em;">📺</div>`;
+                    let tags = '';
+                    if(ch.useProxy) tags += '<span class="proxy-tag">Proxy</span>';
+                    if(ch.drmType === 'widevine') tags += `<span class="drm-tag" style="right: ${ch.useProxy ? '85px' : '15px'}">WV</span>`;
+                    else if(ch.drmType === 'playready') tags += `<span class="drm-tag" style="right: ${ch.useProxy ? '85px' : '15px'}">PR</span>`;
+                    
+                    li.dataset.channelIndex = String(ch.originalIndex);
+                    li.dataset.sourceIndex = String(ch.sourceIndex);
+                    li.innerHTML = imgHtml + `<span class="channel-name">${ch.name}</span>` + tags;
+                    li.onclick = () => playChannel(ch.originalIndex, li);
+                    groupContainer.appendChild(li);
+                });
+                listElement.appendChild(groupContainer);
+            }
+        }
+
+        async function fetchAndRenderEPG() {
+            if (!currentActiveChannel) return;
+            try {
+                const url = `/api/epg?tvg_id=${encodeURIComponent(currentActiveChannel.tvgId)}&tvg_name=${encodeURIComponent(currentActiveChannel.tvgName)}&name=${encodeURIComponent(currentActiveChannel.name)}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                const epgContainer = document.getElementById('epg-container');
+                const bottomEpgPanel = document.getElementById('bottom-epg-panel');
+                const bottomEpgList = document.getElementById('bottom-epg-list');
+                const headerTitle = document.getElementById('epg-header-title');
+                
+                if (data.programs && data.programs.length > 0) {
+                    bottomEpgPanel.style.display = 'flex';
+                    headerTitle.innerText = currentActiveChannel.name;
+                    
+                    const formatTime = (ts) => {
+                        const d = new Date(ts * 1000);
+                        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+                    };
+                    
+                    const now = Date.now() / 1000;
+                    currentEpgProg = null; nextEpgProg = null;
+                    let listHtml = '', activeIndex = -1;
+                    
+                    data.programs.forEach((prog, index) => {
+                        const isCurrent = (now >= prog.start && now <= prog.stop);
+                        if (isCurrent) { currentEpgProg = prog; if (index + 1 < data.programs.length) nextEpgProg = data.programs[index + 1]; activeIndex = index; }
+                        if (Math.abs(now - prog.start) > 86400 * 2) return; 
+                        
+                        const timeStr = `${formatTime(prog.start)} - ${formatTime(prog.stop)}`;
+                        listHtml += `<li class="epg-row ${isCurrent ? 'active' : ''}" id="epg-row-${index}"><div class="epg-time">${timeStr}</div><div class="epg-title">${prog.title}</div></li>`;
+                    });
+                    
+                    bottomEpgList.innerHTML = listHtml;
+                    if (currentEpgProg) {
+                        document.getElementById('epg-current').innerHTML = `${currentEpgProg.title} <span style="font-size:0.7em; opacity:0.8; font-weight:normal;">(${formatTime(currentEpgProg.start)} - ${formatTime(currentEpgProg.stop)})</span>`;
+                        document.getElementById('epg-next').innerText = nextEpgProg ? `随后播出: ${nextEpgProg.title} (${formatTime(nextEpgProg.start)} - ${formatTime(nextEpgProg.stop)})` : '';
+                        setTimeout(() => {
+                            const activeEl = document.getElementById(`epg-row-${activeIndex}`);
+                            if (activeEl) activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }, 300);
+                    } else {
+                        document.getElementById('epg-current').innerText = '当前时间段暂无节目数据';
+                        document.getElementById('epg-next').innerText = '';
+                    }
+                } else {
+                    bottomEpgPanel.style.display = 'none';
+                    currentEpgProg = null; nextEpgProg = null;
+                }
+            } catch (e) { console.warn('EPG 抓取失败', e); }
+        }
+
+        function updateOsdVisibility() {
+            const epgContainer = document.getElementById('epg-container');
+            let shouldShow = false, nowMs = Date.now(), nowTs = nowMs / 1000;
+            
+            if (nowMs < osdForceShowUntil) shouldShow = true;
+            else if (currentEpgProg) {
+                let timeFromStart = nowTs - currentEpgProg.start, timeToEnd = currentEpgProg.stop - nowTs;
+                if (timeFromStart >= 0 && timeFromStart <= 10) shouldShow = true;
+                else if (timeToEnd <= 30 && timeToEnd >= 20) shouldShow = true;
+            }
+            
+            if (shouldShow && (currentEpgProg || nowMs < osdForceShowUntil)) epgContainer.classList.add('show');
+            else epgContainer.classList.remove('show');
+        }
+
+        function getChannelSourceIndex(channel, fallbackIndex) {
+            const sourceIndex = Number(channel && channel.sourceIndex);
+            if (Number.isInteger(sourceIndex) && sourceIndex >= 0) return sourceIndex;
+            const originalIndex = Number(channel && channel.originalIndex);
+            if (Number.isInteger(originalIndex) && originalIndex >= 0) return originalIndex;
+            return fallbackIndex;
+        }
+
+        function mergeResolvedChannel(channel, resolvedChannel, fallbackIndex) {
+            if (!channel || !resolvedChannel) return channel;
+            const originalIndex = Number.isInteger(channel.originalIndex) ? channel.originalIndex : fallbackIndex;
+            const sourceIndex = getChannelSourceIndex(channel, fallbackIndex);
+            Object.assign(channel, resolvedChannel);
+            channel.mpd = cleanMediaUrl(channel.mpd);
+            channel.originalIndex = originalIndex;
+            channel.sourceIndex = Number.isInteger(Number(channel.sourceIndex)) ? Number(channel.sourceIndex) : sourceIndex;
+            return channel;
+        }
+
+        function looksLikeDirectMediaChannel(channel) {
+            const url = String(channel && channel.mpd || '').toLowerCase();
+            const manifestType = String(channel && channel.manifestType || '').toLowerCase();
+            if (['hls', 'm3u8', 'mpd', 'dash', 'flv', 'mp4', 'native'].includes(manifestType)) return true;
+            return ['.m3u8', '.mpd', '.flv', '.mp4', '.mkv', '.avi', '.ts'].some(token => url.includes(token));
+        }
+
+        function isClearlyUnavailableResolve(data, channel) {
+            if (!data) return false;
+            if (looksLikeDirectMediaChannel(channel)) return false;
+            const httpStatus = Number(data.httpStatus);
+            if (data.status === 'dead') return true;
+            return [404, 410, 451].includes(httpStatus);
+        }
+
+        async function resolveChannelForPlayback(channel, index, force = false) {
+            if (!channel) return channel;
+            const resolveCacheMs = 5 * 60 * 1000;
+            if (channel._resolverChecked && !force && (Date.now() - (channel._resolverCheckedAt || 0)) < resolveCacheMs) {
+                return channel;
+            }
+
+            const sourceIndex = getChannelSourceIndex(channel, index);
+            try {
+                const url = `/api/resolve?index=${encodeURIComponent(sourceIndex)}${force ? '&force=1' : ''}`;
+                const res = await fetch(url, { cache: 'no-store' });
+                const data = await res.json();
+                channel._resolverChecked = true;
+                channel._resolverCheckedAt = Date.now();
+                channel._resolveResult = data;
+                channel._resolveUnavailable = false;
+
+                if (data && data.channel) {
+                    mergeResolvedChannel(channel, data.channel, index);
+                }
+
+                if (data && data.ok) {
+                    channel._resolveStatus = 'ok';
+                    return channel;
+                }
+
+                const message = (data && data.message) ? data.message : '未能解析到真实媒体地址';
+                if (isClearlyUnavailableResolve(data, channel)) {
+                    channel._resolveUnavailable = true;
+                    showStatus(`❌ 直播链接不可用：${message}`, true);
+                    return channel;
+                }
+
+                if (data && data.needJsProbe) {
+                    channel._resolveStatus = 'need-js-probe';
+                    showStatus(`⚠️ 当前页面需要浏览器端嗅探，先按原地址尝试播放: ${channel.name}`, false);
+                } else {
+                    channel._resolveStatus = 'fallback';
+                    const httpStatus = data && data.httpStatus ? `HTTP ${data.httpStatus}` : '未命中';
+                    showStatus(`⚠️ 解析探测${httpStatus}，先按原地址尝试播放: ${channel.name}`, false);
+                }
+            } catch (e) {
+                channel._resolverChecked = false;
+                channel._resolveStatus = 'api-error';
+                console.warn('统一解析接口调用失败，继续尝试原地址', e);
+                showStatus(`⚠️ 解析服务暂不可用，继续尝试原地址: ${channel.name}`, false);
+            }
+            return channel;
+        }
+
+        async function detectStreamType(channel) {
+            channel.mpd = cleanMediaUrl(channel.mpd);
+            const originalUrl = String(channel.mpd || '').toLowerCase();
+            
+            if (originalUrl.includes('4gtv.tv') || originalUrl.includes('.htm') || originalUrl.includes('.php')) return 'iframe';
+            if (originalUrl.includes('.mp4') || originalUrl.includes('.mkv') || originalUrl.includes('.avi') || originalUrl.includes('.ts')) return 'native';
+            if (!channel.drmType || channel.drmType === 'none') {
+                if (originalUrl.includes('.mpd')) return 'mpd';
+                if (originalUrl.includes('.flv')) return 'flv';
+                if (originalUrl.includes('.m3u8')) return 'hls';
+            } else { return 'mpd'; }
+
+            let fetchUrl = cleanMediaUrl(channel.mpd);
+            if (channel.useProxy) {
+                fetchUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(cleanMediaUrl(channel.mpd));
+            }
+            try {
+                const response = await fetch(fetchUrl, { method: 'GET', headers: { 'Range': 'bytes=0-1023' } });
+                const contentType = (response.headers.get('content-type') || '').toLowerCase();
+                
+                if (contentType.includes('text/html')) return 'iframe';
+                if (contentType.includes('mp4') || contentType.includes('video/mp4')) return 'native';
+                if (contentType.includes('x-flv') || contentType.includes('flv')) return 'flv';
+                if (contentType.includes('mpegurl') || contentType.includes('m3u8')) return 'hls';
+                if (contentType.includes('dash') || contentType.includes('mpd')) return 'mpd';
+                
+                const buffer = await response.arrayBuffer();
+                const view = new Uint8Array(buffer);
+                if (view.length >= 3 && view[0] === 0x46 && view[1] === 0x4C && view[2] === 0x56) return 'flv';
+                if (view.length >= 8 && view[4] === 0x66 && view[5] === 0x74 && view[6] === 0x79 && view[7] === 0x70) return 'native';
+            } catch (e) {}
+            return 'hls';
+        }
+
+        async function robustTeardown() {
+            const video = document.getElementById('video');
+            const webviewContainer = document.getElementById('webview-container');
+            const webview = document.getElementById('webview');
+            
+            webview.src = 'about:blank';
+            webviewContainer.style.display = 'none';
+            video.style.display = 'block'; 
+            
+            video.onerror = null; 
+            try { await shakaPlayer.unload(); } catch(e) {}
+            if (hlsPlayer) { try { hlsPlayer.stopLoad(); hlsPlayer.detachMedia(); hlsPlayer.destroy(); } catch(e) {} hlsPlayer = null; }
+            if (mpegtsPlayer) { try { mpegtsPlayer.pause(); mpegtsPlayer.unload(); mpegtsPlayer.detachMediaElement(); mpegtsPlayer.destroy(); } catch(e) {} mpegtsPlayer = null; }
+            video.removeAttribute('src');
+        }
+
+        async function playChannel(index, listItemElement) {
+            document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
+            if (listItemElement) listItemElement.classList.add('active');
+
+            const channel = channelsData[index];
+            if (!channel) {
+                showStatus('❌ 频道索引无效，无法播放', true);
+                return;
+            }
+            channel.originalIndex = Number.isInteger(channel.originalIndex) ? channel.originalIndex : index;
+            currentActiveChannel = channel; 
+            const video = document.getElementById('video');
+            const webviewContainer = document.getElementById('webview-container');
+            const webview = document.getElementById('webview');
+            
+            window.activePlayId = Date.now();
+            const myPlayId = window.activePlayId;
+            
+            showStatus(`正在智能测源与嗅探装载: ${channel.name} ...`);
+            osdForceShowUntil = Date.now() + 10000;
+            document.getElementById('epg-current').innerText = '正在拉取实时节目单...';
+            document.getElementById('epg-next').innerText = '';
+            
+            fetchAndRenderEPG();
+            if (epgDataTimer) clearInterval(epgDataTimer);
+            epgDataTimer = setInterval(fetchAndRenderEPG, 60000); 
+
+            await robustTeardown();
+            if (window.activePlayId !== myPlayId) return;
+
+            showStatus(`正在解析真实播放地址: ${channel.name} ...`);
+            await resolveChannelForPlayback(channel, index);
+            if (window.activePlayId !== myPlayId) return;
+            if (channel._resolveUnavailable) return;
+
+            channel.mpd = cleanMediaUrl(channel.mpd);
+            let targetUrl = channel.mpd;
+            if (channel.useProxy) {
+                targetUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(cleanMediaUrl(channel.mpd));
+                if (channel.userAgent) targetUrl += '&ua=' + encodeURIComponent(channel.userAgent);
+                if (channel.referer) targetUrl += '&ref=' + encodeURIComponent(channel.referer);
+            }
+
+            const streamType = await detectStreamType(channel);
+            if (window.activePlayId !== myPlayId) return;
+
+            if (streamType === 'iframe') {
+                video.style.display = 'none'; 
+                webviewContainer.style.display = 'block'; 
+                webview.src = channel.mpd; 
+                showStatus(`▶ 正在通过 [网页容器嵌套] 展现: ${channel.name}`);
+            }
+            else if (streamType === 'native') {
+                video.onerror = function() {
+                    if (window.activePlayId === myPlayId && video.error) {
+                        let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
+                        if ((video.error.code === 2 || video.error.code === 4) && !currentActiveChannel.useProxy && smartProxyEnabled) {
+                            showStatus(`⚠️ 原生直连触发拦截，自动切换内置代理...`, false);
+                            currentActiveChannel.useProxy = true;
+                            playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
+                            return;
+                        }
+                        let msg = '未知错误';
+                        if (video.error.code === 2) msg = '网络加载异常或CORS跨域拦截';
+                        if (video.error.code === 3) msg = '解码失败';
+                        if (video.error.code === 4) msg = '源站拒绝访问(403/530)';
+                        showStatus(`❌ 播放中断: [原生直通] ${msg}`, true);
+                    }
+                };
+                video.src = targetUrl;
+                showStatus(`▶ 正在播放 [原生直通]: ${channel.name}`);
+                safePlay(video, myPlayId);
+            } 
+            else if (streamType === 'flv') {
+                if (mpegts.getFeatureList().mseLivePlayback) {
+                    mpegtsPlayer = mpegts.createPlayer({ type: 'flv', isLive: true, url: targetUrl, cors: true }, { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: true });
+                    mpegtsPlayer.attachMediaElement(video);
+                    mpegtsPlayer.load();
+                    showStatus(`▶ 正在播放 [FLV 引擎]: ${channel.name}`);
+                    safePlay(video, myPlayId);
+                    mpegtsPlayer.on(mpegts.Events.ERROR, (eType, eDet, errorInfo) => {
+                        if (window.activePlayId === myPlayId) {
+                            let status = (errorInfo && errorInfo.code) ? errorInfo.code : 0;
+                            let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
+                            if ((status === 0 || eType === 'NetworkError') && !currentActiveChannel.useProxy && smartProxyEnabled) {
+                                showStatus(`⚠️ FLV 直连触发跨域，自动启动代理引擎...`, false);
+                                mpegtsPlayer.destroy();
+                                currentActiveChannel.useProxy = true;
+                                playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
+                                return;
+                            }
+                            if (status >= 400) showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true);
+                            else showStatus(`❌ 加载失败 (FLV异常: ${eType})`, true);
+                        }
+                    });
+                } else showStatus('❌ 当前浏览器不支持 FLV 硬解！', true);
+            } 
+            else if (streamType === 'hls') {
+                if (Hls.isSupported()) {
+                    hlsPlayer = new Hls({ enableWorker: true, lowLatencyMode: true, pLoader: CustomPlaylistLoader });
+                    hlsPlayer.loadSource(targetUrl);
+                    hlsPlayer.attachMedia(video);
+                    hlsPlayer.on(Hls.Events.MANIFEST_PARSED, function() {
+                        showStatus(`▶ 正在播放 [HLS 引擎]: ${channel.name}`);
+                        safePlay(video, myPlayId);
+                    });
+                    hlsPlayer.on(Hls.Events.ERROR, function (event, data) {
+                        if (window.activePlayId !== myPlayId) return;
+                        if (data.fatal) {
+                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                                let status = (data.response && data.response.code) ? data.response.code : 0;
+                                let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
+                                const browserBlockedStatuses = [401, 403, 406, 429];
+                                const shouldRetryWithProxy = !currentActiveChannel.useProxy && (
+                                    status === 0
+                                    || browserBlockedStatuses.includes(status)
+                                    || smartProxyEnabled
+                                );
+                                if (shouldRetryWithProxy) {
+                                    const reason = status === 0 ? '浏览器直连疑似跨域或网络被拦截' : `HLS 网络错误 HTTP ${status}`;
+                                    showStatus(`⚠️ ${reason}，自动切换本地代理重试...`, false);
+                                    hlsPlayer.destroy();
+                                    currentActiveChannel.useProxy = true;
+                                    playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
+                                    return;
+                                }
+                                if (status >= 400) { showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true); hlsPlayer.destroy(); return; }
+                                hlsPlayer.startLoad();
+                            }
+                            else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hlsPlayer.recoverMediaError(); }
+                            else { showStatus(`❌ 加载失败 (Hls.js)`, true); }
+                        }
+                    });
+                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    video.src = targetUrl;
+                    showStatus(`▶ 正在播放 [原生HLS]: ${channel.name}`);
+                    safePlay(video, myPlayId);
+                } else showStatus('错误: 您的浏览器不支持 HLS', true);
+            } 
+            else {
+                try {
+                    const drmConfig = {};
+                    if (channel.drmType === 'clearkey' && channel.keys && Object.keys(channel.keys).length > 0) drmConfig.clearKeys = channel.keys;
+                    else if (channel.drmType === 'widevine' && channel.licenseUrl) drmConfig.servers = { 'com.widevine.alpha': channel.licenseUrl };
+                    else if (channel.drmType === 'playready' && channel.licenseUrl) drmConfig.servers = { 'com.microsoft.playready': channel.licenseUrl };
+
+                    shakaPlayer.configure({ drm: drmConfig, manifest: { dash: { ignoreDrmInfo: (channel.drmType === 'clearkey') } } });
+                    await shakaPlayer.load(targetUrl);
+                    showStatus(`▶ 正在播放 [Shaka 引擎]: ${channel.name}`);
+                    safePlay(video, myPlayId);
+                } catch (error) {
+                    console.error("Shaka 播放时致命崩溃:", error);
+                    let errCode = error.code ? error.code : '未知';
+                    
+                    let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
+                    if ((errCode === 1001 || errCode === 1002) && !currentActiveChannel.useProxy && smartProxyEnabled) {
+                        showStatus(`⚠️ 触发流媒体跨域拦截，启动智能代理穿透...`, false);
+                        currentActiveChannel.useProxy = true;
+                        playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
+                        return;
+                    }
+                    
+                    let httpStatus = null;
+                    if (error.data && Array.isArray(error.data)) {
+                        for (let d of error.data) { if (typeof d === 'number' && d >= 400 && d <= 599) { httpStatus = d; break; } }
+                        if (!httpStatus && typeof error.data[1] === 'number' && error.data[1] >= 400) httpStatus = error.data[1];
+                    }
+                    if (httpStatus) showStatus(`❌ 播放中断: 目标源拒绝访问或服务异常 (HTTP ${httpStatus})`, true);
+                    else if (errCode === 1002) showStatus(`❌ 播放中断: 服务器返回无效状态 (BAD_HTTP_STATUS)`, true);
+                    else if (errCode === 1001) showStatus(`❌ 播放中断: 网络连接断开或被源站拦截`, true);
+                    else showStatus(`❌ 加载失败 (Shaka 错误码: ${errCode})`, true);
+                }
+            }
+        }
+        
+				document.addEventListener('DOMContentLoaded', async () => {
+            await initPlayer();
+            
+            // 【核心新增】：深层链接 (Deep Link) 自动播放引擎
+            // 接收 Python 传来的 ?play=序号 参数，实现外部浏览器拉起即播！
+            const urlParams = new URLSearchParams(window.location.search);
+            const playIdx = urlParams.get('play');
+            if (playIdx !== null) {
+                // 给渲染留出一点点时间
+                setTimeout(() => {
+                    const targetItem = Array.from(document.querySelectorAll('.channel-item'))
+                        .find(item => item.dataset.channelIndex === playIdx);
+                    if (targetItem) {
+                        targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        targetItem.click(); // 模拟用户点击，触发自动播放
+                    }
+                }, 600);
+            }
+        });
+    </script>
+</body>
+</html>

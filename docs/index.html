@@ -1,0 +1,1372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="IPTV Ultimate Player 是基于 PySide6 + libmpv 的 Windows 桌面 IPTV 与本地媒体播放器，支持直播源管理、网页嗅探、本地播放、收藏、播放列表和现代化控制界面。">
+  <title>IPTV Ultimate Player - 科技感桌面 IPTV 与本地媒体播放器</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070a10;
+      --bg-2: #0c111b;
+      --surface: rgba(20, 28, 42, 0.78);
+      --surface-strong: rgba(29, 39, 57, 0.88);
+      --line: rgba(132, 184, 255, 0.34);
+      --line-strong: rgba(132, 184, 255, 0.62);
+      --text: #edf6ff;
+      --muted: #aac0d8;
+      --soft: #6f839d;
+      --blue: #72b9ff;
+      --cyan: #55d7e8;
+      --green: #88e6a1;
+      --amber: #ffd166;
+      --magenta: #d7a7ff;
+      --danger: #ff8a8a;
+      --shadow: 0 28px 70px rgba(0, 0, 0, 0.42);
+      --max: 1180px;
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--bg);
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      letter-spacing: 0;
+      background:
+        linear-gradient(180deg, #080b12 0%, #0d1320 44%, #070a10 100%);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 54px 54px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.08));
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(132, 184, 255, 0.16);
+      background: rgba(7, 10, 16, 0.78);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav-inner {
+      width: min(var(--max), calc(100% - 40px));
+      min-height: 70px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 210px;
+      font-weight: 700;
+      color: #f6fbff;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(132, 184, 255, 0.5);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(96, 165, 250, 0.22), rgba(15, 23, 42, 0.9)),
+        #101827;
+      box-shadow: 0 0 26px rgba(114, 185, 255, 0.24);
+    }
+
+    .brand-mark svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: #d8edff;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .nav-links a {
+      padding: 9px 2px;
+      border-bottom: 1px solid transparent;
+    }
+
+    .nav-links a:hover,
+    .nav-links a.active {
+      color: var(--text);
+      border-color: var(--blue);
+    }
+
+    .nav-actions {
+      display: flex;
+      justify-content: flex-end;
+      min-width: 210px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 0 18px;
+      border: 1px solid rgba(132, 184, 255, 0.48);
+      border-radius: 8px;
+      color: #f4fbff;
+      background: rgba(255, 255, 255, 0.06);
+      box-shadow: 0 0 0 rgba(114, 185, 255, 0);
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+      white-space: nowrap;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(132, 184, 255, 0.86);
+      background: rgba(114, 185, 255, 0.12);
+      box-shadow: 0 0 28px rgba(114, 185, 255, 0.2);
+    }
+
+    .button.primary {
+      color: #06101d;
+      border-color: transparent;
+      background: linear-gradient(90deg, var(--blue), #a6ddff);
+      font-weight: 700;
+    }
+
+    .button.primary:hover {
+      box-shadow: 0 0 34px rgba(114, 185, 255, 0.42);
+    }
+
+    .hero {
+      position: relative;
+      min-height: 88vh;
+      display: grid;
+      align-items: center;
+      overflow: hidden;
+      border-bottom: 1px solid rgba(132, 184, 255, 0.14);
+    }
+
+    #signalCanvas {
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      width: 100%;
+      height: 100%;
+      background:
+        linear-gradient(135deg, rgba(7, 10, 16, 0.92), rgba(13, 21, 34, 0.82) 44%, rgba(7, 10, 16, 0.98));
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background:
+        linear-gradient(90deg, rgba(7, 10, 16, 0.86) 0%, rgba(7, 10, 16, 0.52) 52%, rgba(7, 10, 16, 0.84) 100%),
+        linear-gradient(180deg, rgba(7, 10, 16, 0.34), rgba(7, 10, 16, 0.94));
+    }
+
+    .hero-inner {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding: 86px 0 72px;
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(420px, 1.08fr);
+      align-items: center;
+      gap: 52px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      margin-bottom: 20px;
+      padding: 8px 12px;
+      border: 1px solid rgba(136, 230, 161, 0.34);
+      border-radius: 8px;
+      color: #c9f7d5;
+      background: rgba(36, 72, 52, 0.2);
+      font-size: 14px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 16px rgba(136, 230, 161, 0.9);
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 780px;
+      color: #f7fbff;
+      font-size: 64px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .hero-copy {
+      margin: 22px 0 0;
+      max-width: 690px;
+      color: #c4d5ea;
+      font-size: 19px;
+      line-height: 1.85;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 32px;
+    }
+
+    .hero-points {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 34px;
+      max-width: 710px;
+    }
+
+    .hero-point {
+      padding: 14px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .hero-point strong {
+      display: block;
+      color: #f3f9ff;
+      font-size: 18px;
+      margin-bottom: 6px;
+    }
+
+    .hero-point span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .hero-visual {
+      position: relative;
+    }
+
+    .hero-visual img {
+      width: 100%;
+      filter: drop-shadow(0 34px 58px rgba(0, 0, 0, 0.5));
+    }
+
+    .status-strip {
+      position: absolute;
+      left: 7%;
+      right: 7%;
+      bottom: 5%;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .status-pill {
+      min-height: 48px;
+      padding: 8px 10px;
+      border: 1px solid rgba(132, 184, 255, 0.26);
+      border-radius: 8px;
+      background: rgba(6, 12, 22, 0.72);
+      backdrop-filter: blur(12px);
+    }
+
+    .status-pill b {
+      display: block;
+      font-size: 13px;
+      color: #f7fbff;
+    }
+
+    .status-pill span {
+      color: var(--soft);
+      font-size: 12px;
+    }
+
+    section {
+      position: relative;
+      padding: 92px 0;
+      border-bottom: 1px solid rgba(132, 184, 255, 0.1);
+    }
+
+    .section-inner {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(260px, 0.55fr);
+      align-items: end;
+      gap: 36px;
+      margin-bottom: 36px;
+    }
+
+    .section-kicker {
+      margin: 0 0 12px;
+      color: var(--cyan);
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 38px;
+      line-height: 1.24;
+      letter-spacing: 0;
+    }
+
+    .section-desc {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.8;
+      font-size: 16px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .feature-card {
+      min-height: 238px;
+      padding: 22px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.028)),
+        var(--surface);
+      box-shadow: 0 20px 46px rgba(0, 0, 0, 0.18);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(132, 184, 255, 0.58);
+      background:
+        linear-gradient(180deg, rgba(114, 185, 255, 0.12), rgba(255, 255, 255, 0.04)),
+        var(--surface-strong);
+    }
+
+    .icon {
+      width: 42px;
+      height: 42px;
+      margin-bottom: 18px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(132, 184, 255, 0.28);
+      border-radius: 8px;
+      background: rgba(114, 185, 255, 0.1);
+    }
+
+    .icon svg {
+      width: 24px;
+      height: 24px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .feature-card:nth-child(4n + 1) .icon { color: var(--blue); }
+    .feature-card:nth-child(4n + 2) .icon { color: var(--green); }
+    .feature-card:nth-child(4n + 3) .icon { color: var(--amber); }
+    .feature-card:nth-child(4n + 4) .icon { color: var(--magenta); }
+
+    .feature-card h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .feature-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .showcase {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+        #080d16;
+    }
+
+    .showcase-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+      gap: 34px;
+      align-items: center;
+    }
+
+    .showcase-img {
+      border: 1px solid rgba(132, 184, 255, 0.28);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.035);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .showcase-img img {
+      width: 100%;
+    }
+
+    .stack-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .stack-item {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+      padding: 16px;
+      border: 1px solid rgba(132, 184, 255, 0.16);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .stack-no {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(132, 184, 255, 0.36);
+      border-radius: 8px;
+      color: #f6fbff;
+      background: rgba(114, 185, 255, 0.1);
+      font-weight: 700;
+    }
+
+    .stack-item h3 {
+      margin: 0 0 5px;
+      font-size: 17px;
+    }
+
+    .stack-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .media-band {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 38px;
+    }
+
+    .media-panel {
+      min-height: 250px;
+      padding: 22px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+
+    .media-panel h3 {
+      margin: 0 0 16px;
+      font-size: 18px;
+    }
+
+    .channel-list {
+      display: grid;
+      gap: 9px;
+    }
+
+    .channel-row {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) 24px;
+      gap: 10px;
+      align-items: center;
+      min-height: 42px;
+      padding: 8px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #06101d;
+      background: var(--blue);
+      font-weight: 700;
+    }
+
+    .row-text {
+      min-width: 0;
+      color: #dcecff;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row-star {
+      color: var(--amber);
+      font-size: 17px;
+    }
+
+    .control-preview {
+      margin-top: 26px;
+      padding: 16px;
+      border: 1px solid rgba(132, 184, 255, 0.38);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(58, 68, 86, 0.76), rgba(26, 35, 51, 0.88));
+      box-shadow: 0 0 34px rgba(114, 185, 255, 0.14);
+    }
+
+    .control-track {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 42px;
+      align-items: center;
+      gap: 12px;
+      color: #cfe7ff;
+      font-size: 12px;
+      margin-bottom: 14px;
+    }
+
+    .bar {
+      height: 4px;
+      border-radius: 99px;
+      background: #101318;
+      overflow: hidden;
+    }
+
+    .bar span {
+      display: block;
+      width: 55%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--blue), #a8dcff);
+    }
+
+    .control-buttons {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+    }
+
+    .mini-btn {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(132, 184, 255, 0.24);
+      border-radius: 8px;
+      color: #e7f4ff;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .play-btn {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: 2px solid rgba(120, 184, 255, 0.92);
+      box-shadow: 0 0 28px rgba(114, 185, 255, 0.34);
+      background: rgba(114, 185, 255, 0.1);
+    }
+
+    .timeline {
+      display: grid;
+      gap: 16px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .flow-step {
+      position: relative;
+      min-height: 150px;
+      padding: 18px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .flow-step::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -12px;
+      width: 12px;
+      height: 1px;
+      background: var(--line-strong);
+    }
+
+    .flow-step:last-child::after {
+      display: none;
+    }
+
+    .flow-step b {
+      display: block;
+      margin-bottom: 8px;
+      color: #f7fbff;
+    }
+
+    .flow-step span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .arch-img {
+      margin-top: 30px;
+      border: 1px solid rgba(132, 184, 255, 0.25);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .scenario {
+      min-height: 260px;
+      padding: 24px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+        rgba(255, 255, 255, 0.035);
+    }
+
+    .scenario h3 {
+      margin: 0 0 12px;
+      font-size: 21px;
+    }
+
+    .scenario p {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.78;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid rgba(132, 184, 255, 0.22);
+      border-radius: 8px;
+      color: #d7eaff;
+      background: rgba(255, 255, 255, 0.045);
+      font-size: 12px;
+    }
+
+    .tech-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 34px;
+    }
+
+    .tech {
+      padding: 16px;
+      border: 1px solid rgba(132, 184, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+      text-align: center;
+    }
+
+    .tech b {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 16px;
+    }
+
+    .tech span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .cta {
+      padding: 88px 0;
+      background:
+        linear-gradient(90deg, rgba(114, 185, 255, 0.12), rgba(136, 230, 161, 0.06), rgba(215, 167, 255, 0.08)),
+        #080d16;
+    }
+
+    .cta-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 28px;
+      padding: 34px;
+      border: 1px solid rgba(132, 184, 255, 0.28);
+      border-radius: 8px;
+      background: rgba(7, 10, 16, 0.62);
+      box-shadow: var(--shadow);
+    }
+
+    .cta-panel h2 {
+      margin-bottom: 12px;
+    }
+
+    .cta-panel p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    footer {
+      padding: 34px 0;
+      color: var(--soft);
+      font-size: 13px;
+      background: #06080d;
+    }
+
+    .footer-inner {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity 520ms ease, transform 520ms ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 1060px) {
+      .nav-links {
+        display: none;
+      }
+
+      .brand,
+      .nav-actions {
+        min-width: 0;
+      }
+
+      .hero-inner,
+      .showcase-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-inner {
+        padding-top: 70px;
+      }
+
+      .hero-visual {
+        max-width: 820px;
+      }
+
+      h1 {
+        font-size: 50px;
+      }
+
+      .feature-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow,
+      .tech-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow-step::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .nav-inner,
+      .section-inner,
+      .footer-inner,
+      .hero-inner {
+        width: min(calc(100% - 28px), var(--max));
+      }
+
+      .nav-actions {
+        display: none;
+      }
+
+      .hero {
+        min-height: auto;
+      }
+
+      h1 {
+        font-size: 38px;
+      }
+
+      h2 {
+        font-size: 29px;
+      }
+
+      .hero-copy {
+        font-size: 16px;
+      }
+
+      .hero-points,
+      .feature-grid,
+      .media-band,
+      .scenario-grid,
+      .flow,
+      .tech-strip,
+      .section-head,
+      .cta-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .status-strip {
+        position: static;
+        grid-template-columns: 1fr;
+        margin-top: 12px;
+      }
+
+      section {
+        padding: 66px 0;
+      }
+
+      .media-panel,
+      .feature-card,
+      .scenario {
+        min-height: auto;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav" aria-label="主导航">
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="IPTV Ultimate Player 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <rect x="3" y="5" width="18" height="13" rx="2"></rect>
+            <path d="M8 21h8M12 18v3M9 9l5 3-5 3z"></path>
+          </svg>
+        </span>
+        IPTV Ultimate Player
+      </a>
+      <div class="nav-links">
+        <a href="#features">核心能力</a>
+        <a href="#showcase">界面体验</a>
+        <a href="#pipeline">播放链路</a>
+        <a href="#scenes">使用场景</a>
+        <a href="#release">发布部署</a>
+      </div>
+      <div class="nav-actions">
+        <a class="button" href="../README.md">查看 README</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="top">
+    <header class="hero">
+      <canvas id="signalCanvas" aria-hidden="true"></canvas>
+      <div class="hero-inner">
+        <div class="hero-copy-wrap reveal">
+          <span class="eyebrow">PySide6 + libmpv 桌面播放平台</span>
+          <h1>IPTV Ultimate Player</h1>
+          <p class="hero-copy">
+            面向复杂直播源、本地高清媒体库和长期可维护桌面应用的播放器方案。它把直播源管理、网页嗅探解析、浏览器播放、本地播放、收藏、播放列表和诊断日志整合到一个科技感强、体验统一的 Windows 应用里。
+          </p>
+          <div class="hero-actions" aria-label="快捷入口">
+            <a class="button primary" href="../README.md">了解项目</a>
+            <a class="button" href="../.github/workflows/windows-installer.yml">查看打包工作流</a>
+            <a class="button" href="../LICENSE">许可证</a>
+          </div>
+          <div class="hero-points" aria-label="项目概览">
+            <div class="hero-point">
+              <strong>Live + Local</strong>
+              <span>直播频道、本地视频、音频、GIF、图片统一管理。</span>
+            </div>
+            <div class="hero-point">
+              <strong>Probe + Resolve</strong>
+              <span>直接流、网页触发、浏览器嗅探和失败诊断协同工作。</span>
+            </div>
+            <div class="hero-point">
+              <strong>Release Ready</strong>
+              <span>PyInstaller + Inno Setup + GitHub Actions 自动构建。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-visual reveal">
+          <img src="assets/readme-hero.svg" alt="IPTV Ultimate Player 界面预览图">
+          <div class="status-strip" aria-label="播放器状态示意">
+            <div class="status-pill">
+              <b>HLS / DASH / MPD</b>
+              <span>多格式直播支持</span>
+            </div>
+            <div class="status-pill">
+              <b>4K Local Media</b>
+              <span>本地渲染策略</span>
+            </div>
+            <div class="status-pill">
+              <b>Trace Logs</b>
+              <span>失败原因可追踪</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="features">
+      <div class="section-inner">
+        <div class="section-head reveal">
+          <div>
+            <p class="section-kicker">CORE CAPABILITIES</p>
+            <h2>围绕播放、解析、管理和诊断打造完整能力闭环</h2>
+          </div>
+          <p class="section-desc">
+            项目不是只解决“能不能播放”，也关注直播源如何归档、失败如何定位、本地媒体如何连播、复杂网页源如何嗅探，以及最终如何稳定打包发布。
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 6h16v11H4z"></path><path d="M8 21h8M12 17v4M9 10l5 2-5 2z"></path></svg>
+            </span>
+            <h3>直播频道播放</h3>
+            <p>支持 M3U、M3U8、TXT、JSON、CFG 等频道资源，覆盖 HLS、DASH/MPD、FLV、TS 等常见直播格式，并支持频道分组、频道详情与收藏。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 15V9a8 8 0 0 1 16 0v6"></path><path d="M8 15v4H5a2 2 0 0 1-2-2v-2zM16 15v4h3a2 2 0 0 0 2-2v-2z"></path></svg>
+            </span>
+            <h3>本地媒体播放</h3>
+            <p>面向视频、音频、GIF、图片等本地资源，提供流畅优先、画质优先、极致画质等渲染模式，适配普通播放和高画质播放场景。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"></path><path d="M8 9h8M8 13h5M15 13l2 2 3-4"></path></svg>
+            </span>
+            <h3>浏览器嗅探解析</h3>
+            <p>针对需要 JavaScript、点击播放或页面触发后才生成真实流地址的网站，提供浏览器辅助探测能力，让网页可播源尽量进入播放器链路。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.7 6.3.8-4.6 4.3 1.2 6.2L12 17l-5.6 3 1.2-6.2L3 9.5l6.3-.8z"></path></svg>
+            </span>
+            <h3>收藏管理</h3>
+            <p>资源收藏和频道收藏分离管理，收藏关联持久化保存。本地文件失效后会标注状态，避免用户在列表里反复踩空。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 6h14M6 12h14M6 18h14"></path><path d="M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+            </span>
+            <h3>本地播放专辑</h3>
+            <p>支持按文件夹创建播放专辑，专辑可持久化保存，并能配置自动连播、跳过片头、跳过片尾等本地追剧常用策略。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"></path><circle cx="12" cy="12" r="5"></circle></svg>
+            </span>
+            <h3>失败诊断</h3>
+            <p>对 HTTP 不可用、嗅探超时、mpv 403/404、CENC 解密失败、浏览器播放器报错等情况进行分类，结合独立日志文件定位问题。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M7 9h4M7 13h10M15 9h2"></path></svg>
+            </span>
+            <h3>统一视觉系统</h3>
+            <p>播放器控制栏、顶部条、资源库、播放列表、设置面板采用统一深色玻璃拟态风格，突出蓝色辉光和桌面播放器质感。</p>
+          </article>
+
+          <article class="feature-card reveal">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3l8 4v10l-8 4-8-4V7z"></path><path d="M12 12l8-5M12 12v9M12 12L4 7"></path></svg>
+            </span>
+            <h3>安装包发布</h3>
+            <p>仓库已提供 GitHub Actions 工作流，在 Windows runner 上安装依赖、PyInstaller 构建、Inno Setup 打包并发布 Release。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="showcase" class="showcase">
+      <div class="section-inner">
+        <div class="showcase-layout">
+          <div class="showcase-img reveal">
+            <img src="assets/readme-hero.svg" alt="播放器深色玻璃拟态界面展示">
+          </div>
+
+          <div class="timeline reveal">
+            <p class="section-kicker">INTERFACE EXPERIENCE</p>
+            <h2>围绕真实播放操作打磨的桌面 UI</h2>
+            <div class="stack-list">
+              <div class="stack-item">
+                <span class="stack-no">01</span>
+                <div>
+                  <h3>左侧资源与频道面板</h3>
+                  <p>直播状态优先滑出频道列表，本地播放状态优先滑出资源库。频道为空时自动回退到资源面板，避免空面板挡路。</p>
+                </div>
+              </div>
+              <div class="stack-item">
+                <span class="stack-no">02</span>
+                <div>
+                  <h3>右侧播放列表面板</h3>
+                  <p>面向本地播放，支持多个专辑、自动连播和跳过片头片尾。鼠标右边缘触发，双击播放或无操作后自动收起。</p>
+                </div>
+              </div>
+              <div class="stack-item">
+                <span class="stack-no">03</span>
+                <div>
+                  <h3>Apple TV 风控制栏</h3>
+                  <p>播放、停止、前后切换、进度、音量、倍率、全屏统一收纳在底部控制面板中，减少工具栏和播放区之间的割裂感。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="media-band">
+          <div class="media-panel reveal">
+            <h3>资源库视图</h3>
+            <div class="channel-list">
+              <div class="channel-row"><span class="tag">HLS</span><span class="row-text">CCTV-1 综合 · 直播频道</span><span class="row-star">★</span></div>
+              <div class="channel-row"><span class="tag" style="background: var(--green);">4K</span><span class="row-text">Local Movie Sample 2160p.mkv</span><span class="row-star">☆</span></div>
+              <div class="channel-row"><span class="tag" style="background: var(--amber);">MPD</span><span class="row-text">Documentary Channel · DASH</span><span class="row-star">★</span></div>
+              <div class="channel-row"><span class="tag" style="background: var(--magenta);">GIF</span><span class="row-text">Animated Poster Preview.gif</span><span class="row-star">☆</span></div>
+            </div>
+          </div>
+
+          <div class="media-panel reveal">
+            <h3>播放控制面板</h3>
+            <div class="control-preview">
+              <div class="control-track"><span>00:37</span><div class="bar"><span></span></div><span>01:04</span></div>
+              <div class="control-buttons">
+                <span class="mini-btn">‹</span>
+                <span class="mini-btn">-10</span>
+                <span class="mini-btn play-btn">▶</span>
+                <span class="mini-btn">+10</span>
+                <span class="mini-btn">›</span>
+              </div>
+            </div>
+            <p class="section-desc" style="margin-top: 20px;">底部控制台保持固定比例和稳定尺寸，减少图标抖动、遮挡和全屏切换时的状态错乱。</p>
+          </div>
+
+          <div class="media-panel reveal">
+            <h3>诊断输出</h3>
+            <div class="channel-list">
+              <div class="channel-row"><span class="tag" style="background: var(--danger);">403</span><span class="row-text">找到源但 libmpv 被拒绝</span><span></span></div>
+              <div class="channel-row"><span class="tag">TIME</span><span class="row-text">网页嗅探超时</span><span></span></div>
+              <div class="channel-row"><span class="tag" style="background: var(--green);">OK</span><span class="row-text">HLS 直接解析成功</span><span></span></div>
+              <div class="channel-row"><span class="tag" style="background: var(--amber);">DRM</span><span class="row-text">CENC 解密失败</span><span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="pipeline">
+      <div class="section-inner">
+        <div class="section-head reveal">
+          <div>
+            <p class="section-kicker">PLAYBACK PIPELINE</p>
+            <h2>从资源文件到最终播放，链路清晰可追踪</h2>
+          </div>
+          <p class="section-desc">
+            直播源和本地媒体进入统一资源模型后，解析器会根据格式、请求头、网页源和播放结果选择路径。失败时保留 trace 信息，方便继续提升复杂源成功率。
+          </p>
+        </div>
+
+        <div class="flow">
+          <div class="flow-step reveal"><b>资源输入</b><span>频道文件、本地目录、资源收藏、频道收藏、播放专辑。</span></div>
+          <div class="flow-step reveal"><b>类型归一</b><span>识别 HLS、DASH、视频、音频、图片、GIF 等资源类型。</span></div>
+          <div class="flow-step reveal"><b>解析探测</b><span>直接解析、请求头补齐、浏览器嗅探和代理转发协同。</span></div>
+          <div class="flow-step reveal"><b>libmpv 播放</b><span>加载媒体、读取轨道信息、同步播放状态和控制面板。</span></div>
+          <div class="flow-step reveal"><b>诊断反馈</b><span>分类记录失败原因，用于重试、下一个频道和后续优化。</span></div>
+        </div>
+
+        <div class="arch-img reveal">
+          <img src="assets/readme-architecture.svg" alt="播放解析链路架构图">
+        </div>
+      </div>
+    </section>
+
+    <section id="scenes" class="showcase">
+      <div class="section-inner">
+        <div class="section-head reveal">
+          <div>
+            <p class="section-kicker">USAGE SCENES</p>
+            <h2>覆盖从看直播到整理本地媒体库的常见场景</h2>
+          </div>
+          <p class="section-desc">
+            项目在多个迭代阶段持续围绕真实操作问题调整：加载时不卡住界面、面板不遮挡选择、全屏切换不误触暂停、4K 播放策略可切换。
+          </p>
+        </div>
+
+        <div class="scenario-grid">
+          <article class="scenario reveal">
+            <h3>📡 直播源管理与播放</h3>
+            <p>适合集中管理多个频道文件，按分组切换频道，收藏常用频道，并在 libmpv 和浏览器之间对比播放表现。</p>
+            <div class="chips"><span class="chip">M3U/M3U8</span><span class="chip">频道分组</span><span class="chip">频道收藏</span><span class="chip">EPG</span></div>
+          </article>
+
+          <article class="scenario reveal">
+            <h3>🎞️ 本地高清视频播放</h3>
+            <p>适合本地电影、剧集和音乐资源。支持资源目录加载、专辑化管理、自动连播、倍率和不同渲染模式。</p>
+            <div class="chips"><span class="chip">4K</span><span class="chip">音频</span><span class="chip">GIF/图片</span><span class="chip">播放专辑</span></div>
+          </article>
+
+          <article class="scenario reveal">
+            <h3>🧭 复杂网页源分析</h3>
+            <p>当页面必须点击播放才生成真实媒体地址时，通过浏览器探测、请求捕获和失败分类，把不可见的播放链路变得可观察。</p>
+            <div class="chips"><span class="chip">Browser Probe</span><span class="chip">Referer/UA</span><span class="chip">Proxy</span><span class="chip">Trace ID</span></div>
+          </article>
+
+          <article class="scenario reveal">
+            <h3>🚀 GitHub 发布与分发</h3>
+            <p>适合把项目托管到 GitHub 后，通过标签触发自动构建，生成 Windows 安装包并附加到 Release。</p>
+            <div class="chips"><span class="chip">PyInstaller</span><span class="chip">Inno Setup</span><span class="chip">GitHub Actions</span><span class="chip">GPL-3.0</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="release">
+      <div class="section-inner">
+        <div class="section-head reveal">
+          <div>
+            <p class="section-kicker">TECH STACK & RELEASE</p>
+            <h2>技术栈明确，便于持续开发、诊断和发布</h2>
+          </div>
+          <p class="section-desc">
+            当前路线以 PySide6 QWidget 保持开发效率，以 libmpv 承载播放能力，以清晰的日志和文档沉淀复杂源处理经验。
+          </p>
+        </div>
+
+        <div class="tech-strip">
+          <div class="tech reveal"><b>Python 3.12+</b><span>快速迭代</span></div>
+          <div class="tech reveal"><b>PySide6</b><span>桌面 UI</span></div>
+          <div class="tech reveal"><b>libmpv</b><span>播放核心</span></div>
+          <div class="tech reveal"><b>QtWebEngine</b><span>网页辅助</span></div>
+          <div class="tech reveal"><b>Actions</b><span>自动打包</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="section-inner">
+        <div class="cta-panel reveal">
+          <div>
+            <h2>准备把播放器推进到下一个阶段？</h2>
+            <p>继续完善复杂源解析、浏览器播放兼容、媒体信息展示、安装包分发和 UI 细节，这个项目已经有了可以长期演进的结构。</p>
+          </div>
+          <div class="hero-actions" style="margin: 0;">
+            <a class="button primary" href="../README.md">阅读项目文档</a>
+            <a class="button" href="../readme_en.MD">English README</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <span>IPTV Ultimate Player · PySide6 + libmpv</span>
+      <span>GPL-3.0-or-later · Use authorized media sources only.</span>
+    </div>
+  </footer>
+
+  <script>
+    const canvas = document.getElementById("signalCanvas");
+    const ctx = canvas.getContext("2d");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let width = 0;
+    let height = 0;
+    let points = [];
+
+    function resizeCanvas() {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      width = canvas.clientWidth;
+      height = canvas.clientHeight;
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+      const count = Math.max(48, Math.floor((width * height) / 18000));
+      points = Array.from({ length: count }, () => ({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        vx: (Math.random() - 0.5) * 0.34,
+        vy: (Math.random() - 0.5) * 0.28,
+        size: Math.random() * 1.8 + 0.7
+      }));
+    }
+
+    function drawSignalField() {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "rgba(7, 10, 16, 0.2)";
+      ctx.fillRect(0, 0, width, height);
+
+      for (let i = 0; i < points.length; i += 1) {
+        const p = points[i];
+        if (!reducedMotion) {
+          p.x += p.vx;
+          p.y += p.vy;
+          if (p.x < 0 || p.x > width) p.vx *= -1;
+          if (p.y < 0 || p.y > height) p.vy *= -1;
+        }
+
+        for (let j = i + 1; j < points.length; j += 1) {
+          const q = points[j];
+          const dx = p.x - q.x;
+          const dy = p.y - q.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 145) {
+            const alpha = (1 - dist / 145) * 0.22;
+            ctx.strokeStyle = `rgba(114, 185, 255, ${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.stroke();
+          }
+        }
+
+        ctx.fillStyle = "rgba(213, 238, 255, 0.76)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (!reducedMotion) {
+        requestAnimationFrame(drawSignalField);
+      }
+    }
+
+    resizeCanvas();
+    drawSignalField();
+    window.addEventListener("resize", resizeCanvas);
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("visible");
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.18 });
+
+    document.querySelectorAll(".reveal").forEach((item) => observer.observe(item));
+
+    const sections = [...document.querySelectorAll("main section[id]")];
+    const navLinks = [...document.querySelectorAll(".nav-links a")];
+
+    function updateActiveNav() {
+      const y = window.scrollY + 140;
+      let current = null;
+      for (const section of sections) {
+        if (section.offsetTop <= y) {
+          current = section;
+        }
+      }
+      navLinks.forEach((link) => {
+        link.classList.toggle("active", current && link.getAttribute("href") === `#${current.id}`);
+      });
+    }
+
+    window.addEventListener("scroll", updateActiveNav, { passive: true });
+    updateActiveNav();
+  </script>
+</body>
+</html>

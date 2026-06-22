@@ -1,0 +1,144 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    env:
+      APP_NAME: IPTVPlayer
+      DISPLAY_NAME: IPTV Ultimate Player
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.0.${{ github.run_number }}"
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "APP_VERSION=$version"
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      - name: Build application with PyInstaller
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --name "$env:APP_NAME" `
+            --collect-all PySide6 `
+            --hidden-import PySide6.QtWebEngineCore `
+            --hidden-import PySide6.QtWebEngineWidgets `
+            --hidden-import PySide6.QtWebEngineQuick `
+            --add-data "frontend;frontend" `
+            --add-data "i18n;i18n" `
+            --add-data "plugins;plugins" `
+            --add-data "widevine;widevine" `
+            main.py
+
+      - name: Create Inno Setup script
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path installer | Out-Null
+          @"
+          #define MyAppName "$env:DISPLAY_NAME"
+          #define MyAppDirName "$env:APP_NAME"
+          #define MyAppExeName "$env:APP_NAME.exe"
+          #define MyAppVersion "$env:APP_VERSION"
+
+          [Setup]
+          AppId={{D1A13B6D-36F9-4F27-934A-4A90310A2115}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppPublisher=IPTV Ultimate Player
+          DefaultDirName={autopf}\{#MyAppName}
+          DefaultGroupName={#MyAppName}
+          DisableProgramGroupPage=yes
+          LicenseFile=LICENSE
+          OutputDir=installer
+          OutputBaseFilename=IPTVPlayer-Setup-{#MyAppVersion}
+          Compression=lzma
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+
+          [Files]
+          Source: "dist\{#MyAppDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "readme_en.MD"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Dirs]
+          Name: "{app}\Channels"; Flags: uninsneveruninstall
+          Name: "{app}\EPGs"; Flags: uninsneveruninstall
+          Name: "{app}\config"; Flags: uninsneveruninstall
+          Name: "{app}\logs"; Flags: uninsneveruninstall
+
+          [Icons]
+          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+          "@ | Set-Content -Path installer\installer.iss -Encoding UTF8
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTVPlayer-Windows-Installer-${{ env.APP_VERSION }}
+          path: installer/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/*.exe
