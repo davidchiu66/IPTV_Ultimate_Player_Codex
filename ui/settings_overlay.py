@@ -19,7 +19,7 @@ from utils.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, tr
 class SettingsOverlay(BaseOverlay):
     """Right-side application settings panel."""
 
-    settings_saved = Signal(str, int, int, bool, str, str, str, str, bool)
+    settings_saved = Signal(str, int, int, bool, str, str, str, str, bool, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent, side="right", width=380)
@@ -80,6 +80,7 @@ class SettingsOverlay(BaseOverlay):
         self.diagnostics_level_combo.addItem("调试", "debug")
         self.clock_weekday_check = QCheckBox("悬浮时钟显示星期")
         self.clock_weekday_check.setChecked(True)
+        self.safe_mode_check = QCheckBox("兼容/安全启动模式（重启生效）")
 
         form.addRow("系统代理", self.system_proxy_label)
         form.addRow("用户代理", self.user_proxy_input)
@@ -90,6 +91,7 @@ class SettingsOverlay(BaseOverlay):
         form.addRow("直播渲染模式", self.live_playback_mode_combo)
         form.addRow("界面语言", self.language_combo)
         form.addRow("悬浮时钟", self.clock_weekday_check)
+        form.addRow("启动兼容", self.safe_mode_check)
         form.addRow("诊断日志", self.diagnostics_enabled_check)
         form.addRow("日志级别", self.diagnostics_level_combo)
         root.addLayout(form)
@@ -121,6 +123,7 @@ class SettingsOverlay(BaseOverlay):
         live_playback_mode="smooth",
         language=DEFAULT_LANGUAGE,
         clock_show_weekday=True,
+        safe_mode=False,
     ):
         self.system_proxy_label.setText(system_proxy or "无")
         source_text = {
@@ -143,6 +146,7 @@ class SettingsOverlay(BaseOverlay):
         index = self.diagnostics_level_combo.findData(diagnostics_level or "error")
         self.diagnostics_level_combo.setCurrentIndex(index if index >= 0 else 0)
         self.clock_weekday_check.setChecked(bool(clock_show_weekday))
+        self.safe_mode_check.setChecked(bool(safe_mode))
 
     def _on_save_clicked(self):
         timeout_ms = int(self.probe_timeout_spin.value()) * 1000
@@ -156,5 +160,6 @@ class SettingsOverlay(BaseOverlay):
             self.live_playback_mode_combo.currentData() or "smooth",
             self.language_combo.currentData() or DEFAULT_LANGUAGE,
             self.clock_weekday_check.isChecked(),
+            self.safe_mode_check.isChecked(),
         )
         self.hide_with_animation()

@@ -248,7 +248,7 @@ class NavigationOverlay(BaseOverlay):
         layout.setSpacing(10)
 
         self.btn_open = QPushButton("打开资源目录")
-        self.btn_open_url = QPushButton("打开在线 m3u")
+        self.btn_open_url = QPushButton("打开在线资源")
         self.btn_refresh = QPushButton("刷新当前目录")
         self.btn_delete = QPushButton("删除选中文件")
         for btn in [self.btn_open, self.btn_open_url, self.btn_refresh, self.btn_delete]:

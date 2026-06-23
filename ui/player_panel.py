@@ -25,6 +25,7 @@ from ui.player_controls import PlayerBottomBar, PlayerTopBar
 from utils.diagnostics import get_diagnostics_settings, log_event
 from utils.media_types import is_local_media_channel
 from utils.playback_settings import get_live_playback_mode, get_local_playback_mode
+from utils.compatibility_settings import is_safe_mode_enabled
 from utils.proxy_settings import get_effective_proxy
 from utils.url_cleaning import clean_media_url
 from utils.app_paths import resource_path
@@ -52,7 +53,31 @@ def _is_explicit_http_media_url(url):
     """Return whether an HTTP URL points directly at a media file."""
     lower = str(url or "").strip().lower()
     return lower.startswith(("http://", "https://")) and any(
-        token in lower for token in (".mp4", ".m4v", ".mov", ".flv", ".m3u8", ".mpd")
+        token in lower
+        for token in (
+            ".mp4",
+            ".m4v",
+            ".mov",
+            ".flv",
+            ".m3u8",
+            ".mpd",
+            ".mp3",
+            ".aac",
+            ".flac",
+            ".wav",
+            ".m4a",
+            ".ogg",
+            ".wma",
+            ".opus",
+            ".gif",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".bmp",
+            ".webp",
+            ".tif",
+            ".tiff",
+        )
     )
 
 
@@ -137,6 +162,29 @@ MPV_RENDERER_OPTION_SETS = [
     },
     {
         "name": "default-fallback",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+]
+
+SAFE_MPV_RENDERER_OPTION_SETS = [
+    {
+        "name": "safe-direct3d-nohwdec",
+        "vo": "direct3d",
+        "hwdec": "no",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "safe-gpu-nohwdec",
+        "vo": "gpu",
+        "hwdec": "no",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "safe-default-nohwdec",
+        "hwdec": "no",
         "keep-open": "yes",
         "idle": "yes",
     },
@@ -473,7 +521,8 @@ class NativeMpvAdapter:
         mpv_log_enabled = bool(diagnostics.get("enabled")) and diagnostics.get("level") == "debug"
         log_opts = {"log-file": str(_MPV_RUNTIME_LOG), "msg-level": "all=v"} if mpv_log_enabled else {}
         option_sets = []
-        for option_set in MPV_RENDERER_OPTION_SETS:
+        renderer_sets = SAFE_MPV_RENDERER_OPTION_SETS if is_safe_mode_enabled() else MPV_RENDERER_OPTION_SETS
+        for option_set in renderer_sets:
             opts = dict(option_set)
             opts.update(log_opts)
             option_sets.append(opts)
@@ -840,13 +889,16 @@ class MpvVideoWidget(QWidget):
             return MPV_PLAYBACK_POLICIES[stream_format]
         if stream_format in {"rtsp", "rtmp"}:
             return MPV_PLAYBACK_POLICIES["realtime"]
-        if stream_format in {"mp4", "flv"}:
+        if stream_format in {"mp4", "flv", "audio", "image", "gif", "online"}:
             return MPV_PLAYBACK_POLICIES["http_file"]
         return MPV_PLAYBACK_POLICIES["default"]
 
     def _apply_playback_policy(self, channel, stream_format):
         policy = self._playback_policy(channel, stream_format)
-        applied, failed = self._apply_player_options(policy.get("options") or {})
+        options = dict(policy.get("options") or {})
+        if is_safe_mode_enabled():
+            options["hwdec"] = "no"
+        applied, failed = self._apply_player_options(options)
         trace_id = str((channel or {}).get("_TraceId") or "")
         log_event(
             "mpv.playback_policy",
@@ -869,7 +921,8 @@ class MpvVideoWidget(QWidget):
             ("http-header-fields", ""),
             ("user-agent", ""),
             ("referrer", ""),
-            ("hwdec", "auto-safe"),
+            ("tls-verify", "no"),
+            ("hwdec", "no" if is_safe_mode_enabled() else "auto-safe"),
             ("cache", "auto"),
             ("cache-pause", "no"),
             ("cache-secs", "30"),
@@ -936,6 +989,7 @@ class MpvVideoWidget(QWidget):
         proxy_value, _proxy_source = get_effective_proxy(channel)
         self._set_player_property("http-proxy", proxy_value or "")
         self._set_player_property("http-seekable", "yes")
+        self._set_player_property("tls-verify", "no")
         self._set_player_property("network-timeout", 15)
         self._set_player_property("hls-bitrate", self._quality_bitrate())
         self._set_player_property("rtsp-transport", "tcp")
@@ -973,6 +1027,8 @@ class MpvVideoWidget(QWidget):
                 return "hls"
             if manifest_type in {"mp4", "flv"}:
                 return manifest_type
+            if manifest_type in {"audio", "image", "gif", "online"}:
+                return manifest_type
             if manifest_type in {"rtsp", "rtmp"}:
                 return manifest_type
         lower_url = (url or "").lower()
@@ -984,6 +1040,12 @@ class MpvVideoWidget(QWidget):
             return "mp4"
         if ".flv" in lower_url:
             return "flv"
+        if any(token in lower_url for token in (".mp3", ".aac", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".opus")):
+            return "audio"
+        if ".gif" in lower_url:
+            return "gif"
+        if any(token in lower_url for token in (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")):
+            return "image"
         if lower_url.startswith("rtsp://"):
             return "rtsp"
         if lower_url.startswith("rtmp://"):

@@ -1,5 +1,6 @@
 import json
 import re
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -208,6 +209,12 @@ def _guess_media_type(url: str, content_type: str, body_bytes: bytes) -> str:
         return "flv"
     if ".mp4" in lower_url or "video/mp4" in lower_type or "mp4" in lower_type:
         return "mp4"
+    if any(token in lower_url for token in (".mp3", ".aac", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".opus")) or lower_type.startswith("audio/"):
+        return "audio"
+    if ".gif" in lower_url or "image/gif" in lower_type:
+        return "gif"
+    if any(token in lower_url for token in (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")) or lower_type.startswith("image/"):
+        return "image"
     if body_bytes.startswith(b"#EXTM3U"):
         return "hls"
     if len(body_bytes) >= 3 and body_bytes[:3] == b"FLV":
@@ -230,6 +237,12 @@ def _guess_direct_media_type(url: str) -> str:
         return "mp4"
     if ".ts" in lower_url:
         return "hls"
+    if any(token in lower_url for token in (".mp3", ".aac", ".flac", ".wav", ".m4a", ".ogg", ".wma", ".opus")):
+        return "audio"
+    if ".gif" in lower_url:
+        return "gif"
+    if any(token in lower_url for token in (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")):
+        return "image"
     return "unknown"
 
 
@@ -505,10 +518,12 @@ def _add_browser_like_headers(
 
 def _build_opener(proxy_value: str) -> urllib.request.OpenerDirector:
     handlers: list[Any] = []
+    ssl_context = ssl._create_unverified_context()
     if proxy_value:
         handlers.append(urllib.request.ProxyHandler({"http": proxy_value, "https": proxy_value}))
     else:
         handlers.append(urllib.request.ProxyHandler({}))
+    handlers.append(urllib.request.HTTPSHandler(context=ssl_context))
     handlers.append(urllib.request.HTTPRedirectHandler())
     return urllib.request.build_opener(*handlers)
 

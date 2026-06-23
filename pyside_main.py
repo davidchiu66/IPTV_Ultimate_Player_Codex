@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from utils.compatibility_settings import configure_compatibility_environment
 from utils.logging_utils import CappedLogHandle, app_log_path
 
 
@@ -218,6 +219,8 @@ def configure_mpv_runtime():
 
 def run():
     setup_session_logging()
+    compatibility = configure_compatibility_environment(sys.argv)
+    print(f"compatibility mode: {json.dumps(compatibility, ensure_ascii=False)}")
     ensure_directories()
     configure_qtwebengine_runtime()
     configure_mpv_runtime()

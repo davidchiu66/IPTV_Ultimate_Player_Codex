@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""在线 m3u URL 输入对话框"""
+"""在线资源 URL 输入对话框"""
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
@@ -12,17 +12,17 @@ from ui.dialog_style import apply_light_dialog_style
 
 
 class OnlineM3uDialog(QDialog):
-    """在线 m3u URL 输入对话框
+    """在线资源 URL 输入对话框
 
     提供三个操作选项：
-    - 播放：下载到临时文件并播放
-    - 另存：保存到本地文件并播放
+    - 打开：加载频道文件或直接播放媒体 URL
+    - 保存：保存频道文件，或保存在线媒体链接描述
     - 取消：关闭对话框
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("打开在线 m3u")
+        self.setWindowTitle("打开在线资源")
         self.setMinimumWidth(500)
         apply_light_dialog_style(self)
 
@@ -34,14 +34,15 @@ class OnlineM3uDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         # 提示文字
-        label = QLabel("请输入 m3u URL：")
+        label = QLabel("请输入在线资源 URL（频道文件、视频流、音频流、图片或 GIF）：")
         label.setStyleSheet("font-size: 14px;")
+        label.setWordWrap(True)
         layout.addWidget(label)
 
         # URL 输入框
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("http://example.com/playlist.m3u")
-        self.url_input.setText("http://")
+        self.url_input.setPlaceholderText("https://example.com/playlist.m3u 或 https://example.com/video.mp4")
+        self.url_input.setText("https://")
         self.url_input.setMinimumHeight(30)
         layout.addWidget(self.url_input)
 
@@ -49,14 +50,14 @@ class OnlineM3uDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.play_button = QPushButton("播放")
+        self.play_button = QPushButton("打开")
         self.play_button.setMinimumWidth(80)
         self.play_button.setMinimumHeight(32)
         self.play_button.clicked.connect(self._on_play)
         self.play_button.setDefault(True)  # 默认按钮（回车触发）
         button_layout.addWidget(self.play_button)
 
-        self.save_button = QPushButton("另存")
+        self.save_button = QPushButton("保存")
         self.save_button.setMinimumWidth(80)
         self.save_button.setMinimumHeight(32)
         self.save_button.clicked.connect(self._on_save)

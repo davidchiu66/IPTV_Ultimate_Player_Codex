@@ -7,9 +7,10 @@ import time
 import webbrowser
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -18,8 +19,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QStatusBar,
     QVBoxLayout,
+    QWidget,
 )
 
 from backend.browser_probe import BrowserProbeSession, WEBENGINE_AVAILABLE, WEBENGINE_ERROR
@@ -64,11 +67,25 @@ from utils.playback_settings import (
     set_local_playback_mode,
 )
 from utils.clock_settings import get_clock_show_weekday, set_clock_show_weekday
-from utils.media_types import is_channel_resource, is_local_media, is_local_media_channel, is_resource_file, resource_type_label
+from utils.compatibility_settings import get_compatibility_settings, set_compatibility_safe_mode
+from utils.media_types import (
+    CHANNEL_RESOURCE_EXTENSIONS,
+    LOCAL_AUDIO_EXTENSIONS,
+    LOCAL_GIF_EXTENSIONS,
+    LOCAL_IMAGE_EXTENSIONS,
+    LOCAL_MEDIA_EXTENSIONS,
+    LOCAL_VIDEO_EXTENSIONS,
+    is_channel_resource,
+    is_local_media,
+    is_local_media_channel,
+    is_resource_file,
+    resource_type_label,
+)
 from utils.url_cleaning import clean_media_url
 from utils.i18n import get_language, set_language
 from utils.app_paths import resource_path, runtime_path
 from ui.theme import APP_QSS
+from ui.dialog_style import apply_light_dialog_style
 from ui.window_chrome import handle_frameless_native_event, install_custom_window_chrome
 
 
@@ -124,6 +141,58 @@ def _is_explicit_http_media_url(url):
     )
 
 
+class OnlineResourceProgressDialog(QDialog):
+    """Glass-style busy dialog for online resource loading."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("打开在线资源")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        apply_light_dialog_style(self)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("正在处理在线资源")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
+
+        self.message_label = QLabel("-")
+        self.message_label.setWordWrap(True)
+        self.message_label.setObjectName("hintLabel")
+        layout.addWidget(self.message_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                background: rgba(8, 12, 18, 180);
+                border: 1px solid rgba(120, 180, 255, 90);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(105, 178, 255, 120),
+                    stop:0.5 rgba(140, 205, 255, 230),
+                    stop:1 rgba(105, 178, 255, 120)
+                );
+                border-radius: 4px;
+            }
+            """
+        )
+        layout.addWidget(self.progress_bar)
+
+    def set_message(self, message: str) -> None:
+        """Update the busy message."""
+        self.message_label.setText(message or "")
+
+
 class MainWindow(QMainWindow):
     epg_loaded_signal = Signal(int, int)
     epg_download_success_signal = Signal(str, bool)
@@ -142,7 +211,7 @@ class MainWindow(QMainWindow):
         self.cfg_files_cache = []
         self.discovered_epg_urls = []
         self.is_dirty = False
-        self.current_m3u_url = None  # 记录当前加载的在线 m3u URL
+        self.current_m3u_url = None  # 记录当前加载的在线资源 URL
 
         self.httpd = None
         self.server_thread = None
@@ -156,6 +225,12 @@ class MainWindow(QMainWindow):
         self._last_adjacent_switch_at = 0.0
         self._playlist_outro_triggered = False
         self._playlist_intro_applied_key = ""
+        self._fullscreen_cursor_hidden = False
+        self._fullscreen_cursor_hide_timer = QTimer(self)
+        self._fullscreen_cursor_hide_timer.setSingleShot(True)
+        self._fullscreen_cursor_hide_timer.setInterval(2500)
+        self._fullscreen_cursor_hide_timer.timeout.connect(self._hide_fullscreen_cursor_if_idle)
+        self._online_progress_dialog = None
         self._playback_queue_context = {
             "kind": "",
             "current_key": "",
@@ -176,6 +251,9 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._refresh_favorites_views()
         self._refresh_playlist_overlay()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         if os.path.isdir(self.playlist_mgr.channels_dir):
             self.refresh_directory(self.playlist_mgr.channels_dir)
         self.load_local_epg()
@@ -910,6 +988,7 @@ class MainWindow(QMainWindow):
             get_live_playback_mode(),
             get_language(),
             get_clock_show_weekday(),
+            get_compatibility_settings().get("safe_mode", False),
         )
         self.settings_overlay.show_with_animation()
         self.settings_overlay.raise_()
@@ -960,11 +1039,71 @@ class MainWindow(QMainWindow):
         避免把原生 mpv 窗口单独提升为顶层窗口导致覆盖层错位/失效。"""
         if self.isFullScreen():
             self.showNormal()
+            self._restore_fullscreen_cursor()
+            self._fullscreen_cursor_hide_timer.stop()
         else:
             self.showFullScreen()
+            self._schedule_fullscreen_cursor_hide()
         # 等待新尺寸生效后重新对齐覆盖层
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._reposition_visible_overlays)
+
+    def _event_belongs_to_main_window(self, watched) -> bool:
+        """Return whether an application event belongs to this window."""
+        if isinstance(watched, QWidget):
+            return watched.window() is self
+        return False
+
+    def _side_overlay_visible(self) -> bool:
+        """Return whether a side overlay is currently visible."""
+        return any(
+            overlay.isVisible()
+            for overlay in (
+                self.nav_overlay,
+                self.channel_list_overlay,
+                self.detail_overlay,
+                self.playlist_overlay,
+                self.settings_overlay,
+            )
+        )
+
+    def _schedule_fullscreen_cursor_hide(self) -> None:
+        """Restart the no-mouse-activity cursor hide timer."""
+        if not self.isFullScreen():
+            self._fullscreen_cursor_hide_timer.stop()
+            self._restore_fullscreen_cursor()
+            return
+        self._fullscreen_cursor_hide_timer.start()
+
+    def _restore_fullscreen_cursor(self) -> None:
+        """Restore the cursor if this window hid it for fullscreen playback."""
+        if not self._fullscreen_cursor_hidden:
+            return
+        QApplication.restoreOverrideCursor()
+        self._fullscreen_cursor_hidden = False
+
+    def _hide_fullscreen_cursor_if_idle(self) -> None:
+        """Hide the cursor after a short idle period in fullscreen playback."""
+        if not self.isFullScreen() or self._side_overlay_visible():
+            self._restore_fullscreen_cursor()
+            return
+        if not self._fullscreen_cursor_hidden:
+            QApplication.setOverrideCursor(Qt.BlankCursor)
+            self._fullscreen_cursor_hidden = True
+
+    def eventFilter(self, watched, event):
+        """Track fullscreen input activity so the cursor can auto-hide."""
+        if self.isFullScreen() and self._event_belongs_to_main_window(watched):
+            if event.type() in (
+                QEvent.MouseMove,
+                QEvent.MouseButtonPress,
+                QEvent.MouseButtonRelease,
+                QEvent.Wheel,
+                QEvent.KeyPress,
+            ):
+                self._restore_fullscreen_cursor()
+                self._schedule_fullscreen_cursor_hide()
+        return super().eventFilter(watched, event)
 
     def _reposition_visible_overlays(self):
         """窗口尺寸变化后，重新对齐时钟及当前可见的覆盖层。
@@ -999,6 +1138,8 @@ class MainWindow(QMainWindow):
         """快捷键处理：Esc 退出全屏，F1/F11 切换全屏"""
         if event.key() == Qt.Key_Escape and self.isFullScreen():
             self.showNormal()
+            self._restore_fullscreen_cursor()
+            self._fullscreen_cursor_hide_timer.stop()
             from PySide6.QtCore import QTimer
             QTimer.singleShot(0, self._reposition_visible_overlays)
             return
@@ -1135,6 +1276,7 @@ class MainWindow(QMainWindow):
         live_playback_mode="smooth",
         language="zh_CN",
         clock_show_weekday=True,
+        safe_mode=False,
     ):
         old_port = self.server_port
         set_user_proxy(user_proxy, enabled=True)
@@ -1145,6 +1287,8 @@ class MainWindow(QMainWindow):
         set_live_playback_mode(live_playback_mode)
         set_language(language)
         set_clock_show_weekday(clock_show_weekday)
+        previous_safe_mode = bool(get_compatibility_settings().get("safe_mode", False))
+        set_compatibility_safe_mode(safe_mode)
         self.floating_clock.set_show_weekday(clock_show_weekday)
         self._position_floating()
         self.player_panel.apply_language()
@@ -1153,11 +1297,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"设置已保存；浏览器端口已改为 {self.server_port}，重启本地服务后生效"
             )
+        elif previous_safe_mode != bool(safe_mode):
+            self.statusBar().showMessage("设置已保存；兼容/安全启动模式将在重启后生效")
         else:
             self.statusBar().showMessage("设置已保存")
 
     def open_m3u_url(self):
-        """打开在线 m3u URL"""
+        """打开在线资源 URL。"""
         from ui.online_m3u_dialog import OnlineM3uDialog
         from PySide6.QtWidgets import QDialog
 
@@ -1166,99 +1312,348 @@ class MainWindow(QMainWindow):
             action, url = dialog.get_result()
             if url:
                 if action == 'play':
-                    self._load_m3u_from_url(url, save=False)
+                    self._open_online_resource(url, save=False)
                 elif action == 'save':
-                    self._load_m3u_from_url(url, save=True)
+                    self._open_online_resource(url, save=True)
 
-    def _load_m3u_from_url(self, url, save=False):
-        """从 URL 下载并加载 m3u
+    def _online_url_extension(self, url):
+        """Return the lowercase extension from an online resource URL path."""
+        parsed = urlparse(str(url or "").strip())
+        return os.path.splitext(parsed.path or "")[1].lower()
 
-        Args:
-            url: m3u URL
-            save: True=另存到本地，False=使用临时文件
-        """
+    def _online_resource_name(self, url):
+        """Build a readable resource name from a URL."""
+        parsed = urlparse(str(url or "").strip())
+        name = os.path.basename(parsed.path or "")
+        return name or parsed.netloc or "online_resource"
+
+    def _is_online_channel_file_extension(self, extension):
+        """Return whether an extension should be handled as a channel resource file."""
+        return extension in (CHANNEL_RESOURCE_EXTENSIONS - {".m3u8"})
+
+    def _is_online_media_extension(self, extension):
+        """Return whether an extension should be handled as a directly playable media URL."""
+        return extension in (LOCAL_MEDIA_EXTENSIONS | {".m3u8", ".mpd"})
+
+    def _guess_online_manifest_type(self, url, content_type=""):
+        """Guess the ManifestType for a directly playable online resource."""
+        extension = self._online_url_extension(url)
+        lower_type = str(content_type or "").lower()
+        if extension == ".m3u8" or "mpegurl" in lower_type:
+            return "hls"
+        if extension == ".mpd" or "dash" in lower_type:
+            return "mpd"
+        if extension == ".flv" or "flv" in lower_type:
+            return "flv"
+        if extension in LOCAL_AUDIO_EXTENSIONS or lower_type.startswith("audio/"):
+            return "audio"
+        if extension in LOCAL_GIF_EXTENSIONS or "gif" in lower_type:
+            return "gif"
+        if extension in LOCAL_IMAGE_EXTENSIONS or lower_type.startswith("image/"):
+            return "image"
+        if extension in LOCAL_VIDEO_EXTENSIONS or lower_type.startswith("video/"):
+            return "mp4"
+        return "online"
+
+    def _looks_like_online_channel_file(self, url, content_type="", body_text=""):
+        """Return whether the response appears to be a channel resource file."""
+        extension = self._online_url_extension(url)
+        if self._is_online_channel_file_extension(extension):
+            return True
+        lower_type = str(content_type or "").lower()
+        sample = str(body_text or "").lstrip()
+        sample_lower = sample[:4096].lower()
+        if "mpegurl" in lower_type and "#extinf" in sample_lower:
+            return True
+        if "json" in lower_type and any(token in sample_lower for token in ("manifest", "channels", "streams", "url")):
+            return True
+        if lower_type.startswith("text/") and any(token in sample_lower for token in ("#extinf", "group-title", "manifest", "http://", "https://")):
+            return True
+        return sample.startswith("#EXTM3U") and "#EXTINF" in sample
+
+    def _online_request_headers(self):
+        """Return browser-like headers for online resource downloads."""
+        return {
+            "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+        }
+
+    def _show_online_resource_message(self, message, timeout=0, busy=False):
+        """Show online-resource progress and flush the event loop once."""
+        self.statusBar().showMessage(message, timeout)
+        if busy:
+            if self._online_progress_dialog is None:
+                dialog = OnlineResourceProgressDialog(self)
+                self._online_progress_dialog = dialog
+            self._online_progress_dialog.set_message(message)
+            self._online_progress_dialog.show()
+            self._online_progress_dialog.raise_()
+        QApplication.processEvents()
+
+    def _finish_online_resource_progress(self):
+        """Close the online-resource busy dialog if it is visible."""
+        dialog = self._online_progress_dialog
+        self._online_progress_dialog = None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+            QApplication.processEvents()
+
+    def _download_online_resource(self, url):
+        """Download an online resource while allowing invalid HTTPS certificates."""
         import requests
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        response = requests.get(
+            url,
+            timeout=20,
+            verify=False,
+            headers=self._online_request_headers(),
+        )
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding or "utf-8"
+        return response
+
+    def _probe_online_resource(self, url):
+        """Probe an online URL without downloading large media bodies."""
+        import requests
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        headers = self._online_request_headers()
+        headers["Range"] = "bytes=0-4095"
+        response = requests.get(
+            url,
+            timeout=12,
+            verify=False,
+            headers=headers,
+            stream=True,
+        )
+        response.raise_for_status()
+        body = b""
+        try:
+            body = next(response.iter_content(4096), b"") or b""
+        finally:
+            response.close()
+        encoding = response.encoding or response.apparent_encoding or "utf-8"
+        try:
+            text = body.decode(encoding, errors="replace")
+        except Exception:
+            text = body.decode("utf-8", errors="replace")
+        return response.headers.get("Content-Type", ""), text
+
+    def _save_online_channel_file_response(self, url, response):
+        """Save a downloaded online channel resource and return the local path."""
+        extension = self._online_url_extension(url)
+        if not extension or extension not in CHANNEL_RESOURCE_EXTENSIONS:
+            extension = ".m3u"
+        default_name = os.path.splitext(self._online_resource_name(url))[0] or "online_resource"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存在线资源文件",
+            os.path.join(self.playlist_mgr.channels_dir, f"{default_name}{extension}"),
+            "频道资源 (*.m3u *.m3u8 *.txt *.cfg *.json);;所有文件 (*.*)",
+        )
+        if not save_path:
+            return ""
+        with open(save_path, "w", encoding="utf-8") as handle:
+            handle.write(response.text)
+        return save_path
+
+    def _save_online_media_descriptor(self, url, content_type=""):
+        """Save a directly playable online media URL as a reusable JSON resource."""
+        name = self._online_resource_name(url)
+        base_name = os.path.splitext(name)[0] or "online_media"
+        channel = {
+            "Name": name,
+            "Category": "在线资源",
+            "Manifest": url,
+            "ManifestType": self._guess_online_manifest_type(url, content_type),
+            "UseLocalProxy": False,
+        }
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存在线媒体资源",
+            os.path.join(self.playlist_mgr.channels_dir, f"{base_name}.json"),
+            "JSON 资源 (*.json);;所有文件 (*.*)",
+        )
+        if not save_path:
+            return "", {}
+        with open(save_path, "w", encoding="utf-8") as handle:
+            json.dump({"Channels": [channel]}, handle, ensure_ascii=False, indent=2)
+        return save_path, channel
+
+    def _play_online_media_url(self, url, content_type="", saved_path=""):
+        """Play an online video/audio/image/GIF URL directly."""
+        name = self._online_resource_name(url)
+        channel = {
+            "Name": name,
+            "Category": "在线资源",
+            "Manifest": url,
+            "ManifestType": self._guess_online_manifest_type(url, content_type),
+            "_IsOnlineMedia": True,
+        }
+        self.nav_overlay.hide_with_animation()
+        if saved_path:
+            self.load_config(saved_path)
+        self.play_channel(
+            channel,
+            queue_kind="online_resource",
+            queue_key=url,
+            queue_source=saved_path or url,
+        )
+
+    def _load_online_channel_resource_file(self, path, url, save=False):
+        """Load an online channel resource file and report empty/invalid results."""
+        loaded = self.load_config(path)
+        if not loaded:
+            self._show_online_resource_message("在线资源加载失败", 3000)
+            return False
+
+        channel_count = len(self.playlist_mgr.streams)
+        if channel_count <= 0:
+            QMessageBox.warning(
+                self,
+                "未解析到频道",
+                "在线资源已下载，但没有解析出任何频道信息。\n\n"
+                "可能原因：\n"
+                "1. 该地址不是频道资源文件；\n"
+                "2. 文件格式不受支持或内容为空；\n"
+                "3. 源站返回了错误页面、鉴权页面或过期内容。\n\n"
+                f"URL：{url}",
+            )
+            self._show_online_resource_message("在线资源未解析到频道", 5000)
+            return False
+
+        self.current_m3u_url = url
+        action_text = "已保存并加载" if save else "已加载"
+        self._show_online_resource_message(
+            f"{action_text}在线资源（{channel_count} 个频道）",
+            5000,
+        )
+        self.nav_overlay.hide_with_animation()
+        QTimer.singleShot(350, self._show_channel_list)
+        return True
+
+    def _open_online_resource(self, url, save=False):
+        """Open or save an online channel file or directly playable media URL."""
         import tempfile
 
+        url = str(url or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            QMessageBox.warning(self, "无法打开在线资源", "请输入有效的 http 或 https 地址")
+            return
+
         try:
-            # 显示进度
-            self.statusBar().showMessage(f"正在下载 {url}...")
+            extension = self._online_url_extension(url)
+            content_type = ""
+            body_text = ""
 
-            # 下载（10 秒超时）
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
+            if self._is_online_media_extension(extension):
+                if save:
+                    saved_path, _channel = self._save_online_media_descriptor(url)
+                    if not saved_path:
+                        self._show_online_resource_message("已取消", 2000)
+                        return
+                    self._play_online_media_url(url, saved_path=saved_path)
+                    self._show_online_resource_message(f"已保存并打开在线媒体：{os.path.basename(saved_path)}", 5000)
+                else:
+                    self._play_online_media_url(url)
+                    self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(url)}", 3000)
+                return
 
-            # 自动检测编码
-            response.encoding = response.apparent_encoding or 'utf-8'
-
-            if save:
-                # 另存：显示文件保存对话框
-                save_path, _ = QFileDialog.getSaveFileName(
-                    self,
-                    "保存 m3u 文件",
-                    os.path.join(self.playlist_mgr.channels_dir, "online.m3u"),
-                    "M3U 文件 (*.m3u);;所有文件 (*.*)"
-                )
-
-                if not save_path:
-                    # 用户取消保存
-                    self.statusBar().showMessage("已取消", 2000)
+            if not self._is_online_channel_file_extension(extension):
+                self._show_online_resource_message(f"正在探测在线资源：{url}...", busy=True)
+                content_type, body_text = self._probe_online_resource(url)
+                self._finish_online_resource_progress()
+                if not self._looks_like_online_channel_file(url, content_type, body_text):
+                    if save:
+                        saved_path, _channel = self._save_online_media_descriptor(url, content_type)
+                        if not saved_path:
+                            self._show_online_resource_message("已取消", 2000)
+                            return
+                        self._play_online_media_url(url, content_type, saved_path=saved_path)
+                        self._show_online_resource_message(f"已保存并打开在线媒体：{os.path.basename(saved_path)}", 5000)
+                    else:
+                        self._play_online_media_url(url, content_type)
+                        self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(url)}", 3000)
                     return
 
-                with open(save_path, 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                temp_path = save_path
-            else:
-                # 播放：使用临时文件
-                with tempfile.NamedTemporaryFile(
-                    mode='w', suffix='.m3u', delete=False, encoding='utf-8'
-                ) as f:
-                    f.write(response.text)
-                    temp_path = f.name
-
-            # 加载配置（复用现有逻辑）
-            self.load_config(temp_path)
-
-            # 记录 URL，方便后续刷新
-            self.current_m3u_url = url
+            self._show_online_resource_message(f"正在下载在线资源：{url}...", busy=True)
+            response = self._download_online_resource(url)
+            self._finish_online_resource_progress()
+            if not self._looks_like_online_channel_file(url, response.headers.get("Content-Type", ""), response.text):
+                if save:
+                    saved_path, _channel = self._save_online_media_descriptor(url, response.headers.get("Content-Type", ""))
+                    if not saved_path:
+                        self._show_online_resource_message("已取消", 2000)
+                        return
+                    self._play_online_media_url(url, response.headers.get("Content-Type", ""), saved_path=saved_path)
+                    self._show_online_resource_message(f"已保存并打开在线媒体：{os.path.basename(saved_path)}", 5000)
+                else:
+                    self._play_online_media_url(url, response.headers.get("Content-Type", ""))
+                    self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(url)}", 3000)
+                return
 
             if save:
-                self.statusBar().showMessage(
-                    f"已保存并加载在线 m3u（{len(self.playlist_mgr.streams)} 个频道）", 5000
-                )
+                temp_path = self._save_online_channel_file_response(url, response)
+                if not temp_path:
+                    self._show_online_resource_message("已取消", 2000)
+                    return
             else:
-                self.statusBar().showMessage(
-                    f"已加载在线 m3u（{len(self.playlist_mgr.streams)} 个频道）", 5000
-                )
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=self._online_url_extension(url) or ".m3u",
+                    delete=False,
+                    encoding="utf-8",
+                ) as handle:
+                    handle.write(response.text)
+                    temp_path = handle.name
 
-        except requests.Timeout:
-            QMessageBox.critical(
-                self,
-                "加载失败",
-                "下载超时，请检查网络连接或稍后重试"
-            )
-            self.statusBar().showMessage("下载超时", 3000)
-        except requests.HTTPError as e:
-            QMessageBox.critical(
-                self,
-                "加载失败",
-                f"HTTP 错误 {e.response.status_code}：{e.response.reason}"
-            )
-            self.statusBar().showMessage("下载失败", 3000)
-        except requests.RequestException as e:
-            QMessageBox.critical(
-                self,
-                "加载失败",
-                f"网络错误：{str(e)}"
-            )
-            self.statusBar().showMessage("下载失败", 3000)
+            self._load_online_channel_resource_file(temp_path, url, save=save)
+
         except Exception as e:
+            self._finish_online_resource_progress()
+            try:
+                import requests
+            except Exception:
+                requests = None
+            if requests is not None and isinstance(e, requests.Timeout):
+                QMessageBox.critical(
+                    self,
+                    "加载失败",
+                    "下载超时，请检查网络连接或稍后重试"
+                )
+                self._show_online_resource_message("下载超时", 3000)
+                return
+            if requests is not None and isinstance(e, requests.HTTPError):
+                QMessageBox.critical(
+                    self,
+                    "加载失败",
+                    f"HTTP 错误 {e.response.status_code}：{e.response.reason}"
+                )
+                self._show_online_resource_message("下载失败", 3000)
+                return
+            if requests is not None and isinstance(e, requests.RequestException):
+                QMessageBox.critical(
+                    self,
+                    "加载失败",
+                    f"网络错误：{str(e)}"
+                )
+                self._show_online_resource_message("下载失败", 3000)
+                return
             QMessageBox.critical(
                 self,
                 "加载失败",
                 f"加载失败：{str(e)}"
             )
-            self.statusBar().showMessage("加载失败", 3000)
+            self._show_online_resource_message("加载失败", 3000)
+        finally:
+            self._finish_online_resource_progress()
 
     def _on_file_selected(self, path, queue_kind="resource_files", queue_key=None):
         """文件被选中后的处理：频道资源加载列表，本地媒体直接播放。"""
@@ -1310,7 +1705,7 @@ class MainWindow(QMainWindow):
 
         if not success:
             QMessageBox.critical(self, "加载失败", f"无法加载文件：{err}")
-            return
+            return False
 
         self.current_config_path = filepath
         self.is_dirty = False
@@ -1339,6 +1734,7 @@ class MainWindow(QMainWindow):
 
         if self.discovered_epg_urls and not self._fallback_dialog_open:
             self._prompt_auto_download_epg()
+        return True
 
     def _on_epg_url_discovered(self, url):
         if url and url not in self.discovered_epg_urls:

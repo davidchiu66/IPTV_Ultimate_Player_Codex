@@ -1,2 +1,6 @@
 PySide6>=6.7
-mpv>=1.0.8
+requests>=2.31
+urllib3>=1.26
+
+# libmpv is loaded as a native DLL from plugins/Mpv via ctypes.
+# The python-mpv package is not required by the current codebase.

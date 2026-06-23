@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizeGrip, QWidget
 
 from utils.app_paths import resource_path
+from utils.compatibility_settings import should_install_custom_chrome
 
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19
@@ -281,10 +282,10 @@ class _CustomChromeEventFilter(QObject):
     """Keep the custom title bar geometry and margins in sync."""
 
     def __init__(self, window: QWidget, title_bar: GlassTitleBar, grip: QSizeGrip | None) -> None:
+        super().__init__(window)
         self._window = window
         self._title_bar = title_bar
         self._grip = grip
-        super().__init__(window)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """React to resize, title changes and full-screen state changes."""
@@ -339,6 +340,8 @@ def install_custom_window_chrome(
     """Install a custom glass title bar on a top-level widget."""
     if widget is None:
         return None
+    if not should_install_custom_chrome():
+        return None
     existing = getattr(widget, "_glass_custom_title_bar", None)
     if existing is not None:
         existing.set_title(widget.windowTitle())
@@ -367,6 +370,8 @@ def handle_frameless_native_event(
     border_width: int = 8,
 ) -> tuple[bool, int]:
     """Provide invisible resize borders for frameless Windows top-level widgets."""
+    if getattr(widget, "_glass_custom_title_bar", None) is None:
+        return False, 0
     if sys.platform != "win32" or widget.isFullScreen() or widget.isMaximized():
         return False, 0
     try:
