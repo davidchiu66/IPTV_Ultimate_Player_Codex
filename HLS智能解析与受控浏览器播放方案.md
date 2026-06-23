@@ -534,3 +534,148 @@
 1. 已解析频道再次播放明显更快
 2. 失效频道不会短时间内被疯狂重复探测
 3. 不会在打开频道文件时对全部频道发起探测请求
+
+## 15. 小红书回放 MP4 智能解析与 libmpv 播放修复记录（2026-06-23）
+
+### 15.1 问题背景
+
+用户提供的 `FIFA2026.m3u` 中，世界杯回放频道使用如下中转链接：
+
+```m3u
+#EXTINF:-1 tvg-name="世界杯4K回放-墨西哥vs韩国_2026-06-19 08:30:00" group-title="4K世界杯回放",世界杯4K回放-墨西哥vs韩国_2026-06-19 08:30:00
+http://82.156.243.185:34567/xhs/4459821
+```
+
+该中转链接可解析到小红书 CDN 的真实 MP4：
+
+```text
+https://sns-video-v4-m.xhscdn.com/stream/1/110/386/01ea34bd42429b2f010370019ede453409_386.mp4?sign=...&t=...
+```
+
+PotPlayer 以及浏览器地址栏直接打开真实 MP4 可以播放，但播放器内出现 `idle-active`，即解析成功后 `libmpv` 未能真正打开媒体。
+
+### 15.2 原因分析
+
+本轮定位后确认问题分为两层：
+
+1. 解析层请求形态不够像真实浏览器：
+   - 早期逻辑对所有 HTTP 源先发起 `HEAD` 探测。
+   - 对签名 CDN、回放 MP4、部分防盗链源，`HEAD` 与浏览器播放视频时的 `GET + Range` 行为不一致，容易误判。
+   - 探测请求头缺少 `sec-ch-ua`、`Sec-Fetch-*`、浏览器式 `Accept` 等信息。
+
+2. 播放层请求头与“浏览器地址栏直开 MP4”不一致：
+   - `/xhs/...` 中转链接通过重定向/解析得到真实 MP4 后，播放器曾把原始中转地址写入 `Referer`，并可能添加 `Origin`。
+   - 但浏览器地址栏直接输入真实 MP4 时通常没有 `Referer/Origin`。
+   - 对小红书 CDN 这类签名视频，额外的 `Referer/Origin` 可能反而触发防盗链差异，导致 `libmpv` idle。
+
+### 15.3 已完成修复
+
+解析层：
+
+1. 对 `.mp4/.m4v/.mov/.flv/.m3u8/.mpd/.ts` 增加显式媒体 URL 识别。
+2. 显式媒体 URL 优先使用浏览器式 `GET + Range` 探测，而不是先 `HEAD`。
+3. 探测请求头伪装为 Chromium 浏览器媒体请求，补充：
+   - `User-Agent`
+   - `sec-ch-ua`
+   - `sec-ch-ua-mobile`
+   - `sec-ch-ua-platform`
+   - `Sec-Fetch-Site`
+   - `Sec-Fetch-Mode`
+   - `Sec-Fetch-Dest`
+   - `Accept-Language`
+   - `Range`
+4. 对明确媒体 URL，在探测异常但不是明确死亡状态时，不再直接阻断播放，而是允许交给 `libmpv`。
+5. 小红书 `sns-video*.xhscdn.com` 最终地址统一从 `http` 规范为 `https`。
+
+播放层：
+
+1. `redirect -> MP4` 场景不再向 `libmpv` 注入原始 `/xhs/...` 作为 `Referer`。
+2. `redirect -> MP4` 场景清理 `Origin/Referer`，模拟浏览器地址栏直接打开真实 MP4 的请求形态。
+3. 对直连 HTTP 媒体补充媒体播放请求头：
+   - `Accept: */*`
+   - `Sec-Fetch-Site: none`
+   - `Sec-Fetch-Mode: no-cors`
+   - `Sec-Fetch-Dest: video`
+   - `Cache-Control: no-cache`
+4. 增加 `http-file-vod` 策略，用于 MP4/FLV 回放点播。
+5. MP4/FLV 增加格式识别，失败弹窗不再显示 `UNKNOWN`。
+6. 设置 `http-seekable=yes`，适配支持 Range 的回放视频。
+
+相关提交：
+
+- `b0122e6 Improve browser-like media link probing`
+- `2753fee Fix mpv playback headers for redirected mp4`
+
+### 15.4 已验证结果
+
+已验证样例：
+
+1. 用户提供的真实 MP4：
+   - `https://sns-video-v4-m.xhscdn.com/...01ea34bd...mp4?sign=...&t=...`
+   - resolver 返回：`ok / mp4 / 206 / direct`
+
+2. `FIFA2026.m3u` 中 `/xhs/...` 回放中转链接：
+   - resolver 返回：`ok / mp4 / 206 / redirect`
+   - 最终真实地址规范为 `https://sns-video...mp4?...`
+
+3. 解析后交给 `libmpv` 的频道数据：
+   - `ManifestType = mp4`
+   - 保留 Chrome UA
+   - 不再携带原始中转页 `Referer`
+   - 不再携带 `Origin`
+   - 播放策略为 `http-file-vod`
+
+### 15.5 后续验收办法
+
+重点频道：
+
+```m3u
+#EXTINF:-1 tvg-name="世界杯4K回放-墨西哥vs韩国_2026-06-19 08:30:00" group-title="4K世界杯回放",世界杯4K回放-墨西哥vs韩国_2026-06-19 08:30:00
+http://82.156.243.185:34567/xhs/4459821
+```
+
+验收步骤：
+
+1. 打开 `FIFA2026.m3u`。
+2. 播放上述频道。
+3. 观察是否能解析到 `sns-video...mp4`。
+4. 观察 `libmpv` 是否进入播放态，而不是 `idle-active`。
+5. 若失败，打开诊断 debug，检查：
+   - `logs/app_*.log`
+   - `mpv-runtime.log`
+   - `playback.failed` 中的 `resolved_info`
+   - `mpv` 返回的 HTTP 状态、TLS 错误或 demuxer 错误。
+
+通过标准：
+
+1. 频道能自动解析到真实 MP4。
+2. 播放器内置 `libmpv` 可直接播放。
+3. 失败弹窗协议显示 `MP4`，不再显示 `UNKNOWN`。
+4. 如果真实 MP4 签名过期，应自动回到 `/xhs/...` 原始链接强制重新解析一次。
+
+### 15.6 下一步计划
+
+1. 增强 `mpv-runtime.log` 的自动关联能力：
+   - 在 `playback.failed` 中追加最近一次 `libmpv` 网络错误摘要。
+   - 在弹窗中显示更明确原因，如 `403`、TLS 失败、重定向失败、demuxer 不支持。
+
+2. 增加“解析成功但 mpv idle”的专项恢复策略：
+   - 对 `redirect -> signed mp4`，idle 后自动回源重新解析一次。
+   - 重新解析仍失败时，提供“浏览器播放”“复制真实链接”“复制原始链接”操作。
+
+3. 完善 MP4/FLV 点播检测：
+   - 区分直播 FLV 与点播 MP4。
+   - 对点播源启用更适合 seek/cache 的策略。
+
+4. 建立回放源测试集：
+   - 小红书 CDN MP4。
+   - 带签名参数 MP4。
+   - 302/301 跳转到 MP4。
+   - 只支持 `GET + Range`、拒绝 `HEAD` 的源。
+   - 需要无 Referer 才能播放的源。
+   - 需要特定 Referer 才能播放的源。
+
+5. 请求头策略配置化：
+   - 默认自动判断。
+   - 可在频道级别覆盖：无 Referer、使用原始页 Referer、自定义 Referer、自定义 Cookie。
+   - 为复杂 CDN 源保留人工修正入口。
