@@ -160,6 +160,11 @@ class NavigationOverlay(BaseOverlay):
         self._build_resource_favorites_tab()
         self._build_channel_favorites_tab()
 
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setStyleSheet(self._button_style())
+        self.cancel_button.clicked.connect(self.hide_with_animation)
+        layout.addWidget(self.cancel_button)
+
         self.btn_open.clicked.connect(self.open_directory_requested.emit)
         self.btn_open_url.clicked.connect(self.open_url_requested.emit)
         self.btn_refresh.clicked.connect(self.refresh_requested.emit)

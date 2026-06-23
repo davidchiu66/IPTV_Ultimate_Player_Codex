@@ -153,6 +153,10 @@ class PlaylistOverlay(BaseOverlay):
         action_row.addWidget(self.delete_button)
         root.addLayout(action_row)
 
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.clicked.connect(self.hide_with_animation)
+        root.addWidget(self.cancel_button)
+
         self.album_combo.currentIndexChanged.connect(self._on_album_combo_changed)
         self.new_button.clicked.connect(self.create_album_requested.emit)
         self.settings_button.clicked.connect(self._emit_edit_album)

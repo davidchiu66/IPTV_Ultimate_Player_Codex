@@ -95,7 +95,7 @@ class ToolbarOverlay(QFrame):
         self.leave_timer = QTimer(self)
         self.leave_timer.setSingleShot(True)
         self.leave_timer.timeout.connect(self._on_leave_timeout)
-        self.leave_delay = 300
+        self.leave_delay = 5000
 
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
@@ -118,7 +118,7 @@ class ToolbarOverlay(QFrame):
 
     def reset_hide_timer(self):
         self.hide_timer.stop()
-        self.hide_timer.start(10000)
+        self.hide_timer.start(5000)
 
     def leaveEvent(self, event):
         super().leaveEvent(event)

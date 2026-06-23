@@ -4,8 +4,8 @@ from ctypes import POINTER, Structure, Union, byref, c_char_p, c_double, c_int, 
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QPoint, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QPoint, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -27,6 +27,7 @@ from utils.media_types import is_local_media_channel
 from utils.playback_settings import get_live_playback_mode, get_local_playback_mode
 from utils.proxy_settings import get_effective_proxy
 from utils.url_cleaning import clean_media_url
+from utils.app_paths import resource_path
 from utils.logging_utils import app_log_path
 
 
@@ -2088,11 +2089,24 @@ class PlayerPanel(QFrame):
         self.placeholder_widget = QWidget()
         self.placeholder_widget.setObjectName("placeholderWidget")
         self.placeholder_widget.setStyleSheet("#placeholderWidget { background-color: #000000; }")
+        placeholder_layout = QVBoxLayout(self.placeholder_widget)
+        placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_layout.addStretch(1)
+        self.placeholder_logo = QLabel(self.placeholder_widget)
+        self.placeholder_logo.setAlignment(Qt.AlignCenter)
+        self.placeholder_logo.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        logo_pixmap = QPixmap(resource_path("docs/assets/icons/iptv-icon-02-signal-orbit-256.png"))
+        if not logo_pixmap.isNull():
+            self.placeholder_logo.setPixmap(logo_pixmap)
+        placeholder_layout.addWidget(self.placeholder_logo, 0, Qt.AlignHCenter | Qt.AlignVCenter)
+        placeholder_layout.addStretch(1)
+        self.placeholder_widget.installEventFilter(self)
         self.video_stack.addWidget(self.placeholder_widget)
         self.mpv_widget = None
 
         self.video_stack_host = QFrame()
         self.video_stack_host.setObjectName("mpvViewport")
+        self.video_stack_host.installEventFilter(self)
         video_host_layout = QVBoxLayout(self.video_stack_host)
         video_host_layout.setContentsMargins(0, 0, 0, 0)
         video_host_layout.setSpacing(0)
@@ -2163,6 +2177,13 @@ class PlayerPanel(QFrame):
         self.choose_browser_button.clicked.connect(self.open_external_with_browser_requested.emit)
         self.search_input.textChanged.connect(self._schedule_filter)
         self.channel_list.itemClicked.connect(self._on_channel_clicked)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+            if watched is self.placeholder_widget or watched is self.video_stack_host:
+                self.fullscreen_toggle_requested.emit()
+                return True
+        return super().eventFilter(watched, event)
 
     def _ensure_mpv_widget(self):
         if self.mpv_widget is not None:

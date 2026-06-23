@@ -99,6 +99,7 @@ jobs:
             --hidden-import PySide6.QtWebEngineQuick `
             --add-data "frontend;frontend" `
             --add-data "i18n;i18n" `
+            --add-data "docs/assets;docs/assets" `
             --add-data "plugins;plugins" `
             --add-data "widevine;widevine" `
             main.py

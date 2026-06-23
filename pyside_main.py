@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, qInstallMessageHandler
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from utils.logging_utils import CappedLogHandle, app_log_path
@@ -222,11 +223,13 @@ def run():
     configure_mpv_runtime()
 
     from ui.main_window import MainWindow
+    from utils.app_paths import resource_path
 
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
     app.setApplicationName("IPTV 播放器")
     app.setApplicationDisplayName("IPTV 播放器")
+    app.setWindowIcon(QIcon(resource_path("docs/assets/icons/iptv-icon-02-signal-orbit-24.png")))
     window = MainWindow()
     # 使用 show() + center_on_screen() 代替 showMaximized()
     # showMaximized() 会触发多次 resizeEvent，打断覆盖层的滑入动画

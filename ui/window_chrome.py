@@ -7,8 +7,10 @@ import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizeGrip, QWidget
+
+from utils.app_paths import resource_path
 
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19
@@ -20,6 +22,7 @@ _DWMWA_TEXT_COLOR = 36
 _CAPTION_COLOR = "#202938"
 _TEXT_COLOR = "#F2F6FF"
 _BORDER_COLOR = "#78B4FF"
+_TITLE_ICON_PATH = "docs/assets/icons/iptv-icon-02-signal-orbit-24.png"
 _TITLE_BAR_HEIGHT = 32
 _TITLE_BUTTON_WIDTH = 42
 _WM_NCHITTEST = 0x0084
@@ -142,16 +145,21 @@ class _WindowGlyphButton(QPushButton):
 
 
 class _TitleLogo(QWidget):
-    """Tiny geometric app mark used when the native icon is unavailable."""
+    """Shared title-bar app mark."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(16, 16)
+        self.setFixedSize(24, 24)
+        self._pixmap = QPixmap(resource_path(_TITLE_ICON_PATH))
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
-        """Paint a small signal-orbit inspired title icon."""
+        """Paint the shared title icon, falling back to a tiny vector mark."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        if not self._pixmap.isNull():
+            painter.drawPixmap(self.rect(), self._pixmap)
+            painter.end()
+            return
         rect = self.rect().adjusted(2, 2, -2, -2)
         painter.setPen(QPen(QColor(120, 180, 255, 190), 1.2))
         painter.setBrush(QColor(14, 21, 31, 230))
