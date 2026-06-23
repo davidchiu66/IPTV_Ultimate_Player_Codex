@@ -9,6 +9,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
+from utils.logging_utils import CappedLogHandle, app_log_path
+
 
 # Widevine DLL 搜索缓存
 _WIDEVINE_CACHE = None
@@ -59,16 +61,13 @@ class TeeStream:
 
 
 def setup_session_logging():
-    """Create a fresh timestamped log file for this application start."""
+    """Attach stdout/stderr to the single capped application log file."""
     global _SESSION_LOG
     if _SESSION_LOG is not None:
         return _SESSION_LOG["path"]
 
-    logs_dir = Path(os.getcwd()) / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = logs_dir / f"app_{timestamp}.log"
-    log_handle = log_path.open("a", encoding="utf-8", buffering=1)
+    log_path = app_log_path()
+    log_handle = CappedLogHandle(log_path)
     lock = threading.RLock()
 
     original_stdout = sys.stdout
@@ -95,6 +94,7 @@ def setup_session_logging():
         "stdout": original_stdout,
         "stderr": original_stderr,
     }
+    print(f"\n=== session started {datetime.now().isoformat(timespec='seconds')} ===")
     print(f"session log: {log_path}")
     return str(log_path)
 

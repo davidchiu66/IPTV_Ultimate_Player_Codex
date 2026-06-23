@@ -149,7 +149,6 @@ jobs:
           [Dirs]
           Name: "{app}\EPGs"; Flags: uninsneveruninstall
           Name: "{app}\config"; Flags: uninsneveruninstall
-          Name: "{app}\logs"; Flags: uninsneveruninstall
 
           [Icons]
           Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; IconIndex: 0

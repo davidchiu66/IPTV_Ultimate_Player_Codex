@@ -27,6 +27,7 @@ from utils.media_types import is_local_media_channel
 from utils.playback_settings import get_live_playback_mode, get_local_playback_mode
 from utils.proxy_settings import get_effective_proxy
 from utils.url_cleaning import clean_media_url
+from utils.logging_utils import app_log_path
 
 
 DEFAULT_BROWSER_USER_AGENT = (
@@ -325,7 +326,7 @@ class HoverZone(QWidget):
 NATIVE_MPV_AVAILABLE = False
 NATIVE_MPV_ERROR = ""
 _NATIVE_MPV_LIB = None
-_MPV_RUNTIME_LOG = Path(__file__).resolve().parents[1] / "mpv-runtime.log"
+_MPV_RUNTIME_LOG = app_log_path()
 
 MPV_FORMAT_STRING = 1
 MPV_FORMAT_FLAG = 3

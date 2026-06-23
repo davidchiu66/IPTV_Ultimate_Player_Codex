@@ -1,16 +1,17 @@
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from utils.proxy_settings import load_settings, save_settings
+from utils.logging_utils import append_capped_log_line, app_log_path
 
 
-LOG_DIR = "logs"
-DIAGNOSTICS_LOG_PATH = os.path.join(LOG_DIR, "diagnostics.jsonl")
+DIAGNOSTICS_LOG_PATH = str(app_log_path())
 DEFAULT_LEVEL = "error"
 LEVELS = ("off", "error", "info", "debug")
 LEVEL_RANK = {"off": 0, "error": 1, "info": 2, "debug": 3}
@@ -68,7 +69,7 @@ def get_diagnostics_settings():
     return {
         "enabled": enabled,
         "level": level,
-        "log_path": str(diagnostics.get("log_path") or DIAGNOSTICS_LOG_PATH),
+        "log_path": DIAGNOSTICS_LOG_PATH,
         "browser_probe_details": bool(diagnostics.get("browser_probe_details", True)),
     }
 
@@ -174,12 +175,12 @@ def log_event(event, level="info", trace_id="", channel=None, **data):
     record.update(sanitize(data))
 
     try:
-        log_dir = os.path.dirname(path)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        return True
+        line = "diag: " + json.dumps(record, ensure_ascii=False, default=str)
+        session_log_path = os.environ.get("IPTV_SESSION_LOG_PATH", "")
+        if session_log_path and os.path.abspath(session_log_path) == os.path.abspath(path):
+            sys.stderr.write(line + "\n")
+            return True
+        return append_capped_log_line(line, path)
     except Exception:
         return False
 
