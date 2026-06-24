@@ -12,6 +12,10 @@ on:
         description: "Version for manual release, for example 0.1.0 or v0.1.0"
         required: false
         type: string
+      release_notes_path:
+        description: "Release notes markdown path. Defaults to docs/release_notes_<version>.md"
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -76,6 +80,28 @@ jobs:
         shell: pwsh
         run: |
           Set-Content -Path app_version.txt -Value $env:APP_VERSION -Encoding UTF8
+
+      - name: Resolve release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $manualPath = "${{ inputs.release_notes_path }}"
+          if ([string]::IsNullOrWhiteSpace($manualPath)) {
+            $releaseNotesPath = "docs/release_notes_$env:APP_VERSION.md"
+          } else {
+            $releaseNotesPath = $manualPath.Trim()
+          }
+          "RELEASE_NOTES_PATH=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "release_notes_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "RELEASE_NOTES_PATH=$releaseNotesPath"
+
+      - name: Validate release notes
+        if: steps.version.outputs.publish_release == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "$env:RELEASE_NOTES_PATH")) {
+            Write-Error "Release notes file not found: $env:RELEASE_NOTES_PATH. Add docs/release_notes_$env:APP_VERSION.md or provide release_notes_path."
+          }
 
       - name: Install Python dependencies
         shell: pwsh
@@ -184,6 +210,6 @@ jobs:
           tag_name: ${{ steps.version.outputs.release_tag }}
           name: IPTV Ultimate Player ${{ steps.version.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+          body_path: ${{ steps.release_notes.outputs.release_notes_path }}
           fail_on_unmatched_files: true
           files: installer/*.exe
