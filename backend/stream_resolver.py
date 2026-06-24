@@ -257,6 +257,7 @@ def _direct_media_result(
     http_status: int | None = None,
     final_url: str = "",
     message: str = "explicit media url passthrough",
+    resolved_from: str = "direct",
 ) -> dict[str, Any]:
     """Build a successful resolver result for explicit media URLs."""
     resolved_url = clean_media_url(final_url or url)
@@ -270,7 +271,7 @@ def _direct_media_result(
         http_status=http_status,
         final_url=resolved_url,
         message=message,
-        resolved_from="direct",
+        resolved_from=resolved_from,
     )
 
 
@@ -516,7 +517,14 @@ def _add_browser_like_headers(
         _add_default_header(req, existing_headers, "Range", "bytes=0-4095")
 
 
-def _build_opener(proxy_value: str) -> urllib.request.OpenerDirector:
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep redirect responses visible without requesting the target URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+def _build_opener(proxy_value: str, *, follow_redirects: bool = True) -> urllib.request.OpenerDirector:
     handlers: list[Any] = []
     ssl_context = ssl._create_unverified_context()
     if proxy_value:
@@ -524,14 +532,21 @@ def _build_opener(proxy_value: str) -> urllib.request.OpenerDirector:
     else:
         handlers.append(urllib.request.ProxyHandler({}))
     handlers.append(urllib.request.HTTPSHandler(context=ssl_context))
-    handlers.append(urllib.request.HTTPRedirectHandler())
+    handlers.append(urllib.request.HTTPRedirectHandler() if follow_redirects else _NoRedirectHandler())
     return urllib.request.build_opener(*handlers)
 
 
-def _perform_request(channel: dict[str, Any], method: str, use_range: bool = False) -> dict[str, Any]:
+def _perform_request(
+    channel: dict[str, Any],
+    method: str,
+    use_range: bool = False,
+    *,
+    follow_redirects: bool = True,
+    read_body: bool = True,
+) -> dict[str, Any]:
     ctx = _request_context(channel)
     url = ctx["url"]
-    opener = _build_opener(ctx["proxy"])
+    opener = _build_opener(ctx["proxy"], follow_redirects=follow_redirects)
     req = urllib.request.Request(url, method=method)
     for key, value in ctx["headers"].items():
         req.add_header(key, value)
@@ -540,6 +555,7 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
     body_bytes = b""
     body_text = ""
     final_url = url
+    redirect_location = ""
     content_type = ""
     http_status: int | None = None
 
@@ -548,13 +564,18 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
             http_status = response.status
             final_url = response.geturl()
             content_type = response.headers.get("Content-Type", "")
-            if method != "HEAD":
+            if read_body and method != "HEAD":
                 body_bytes = response.read(MAX_BODY_BYTES)
     except urllib.error.HTTPError as exc:
         http_status = exc.code
         final_url = exc.geturl() or url
         content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
-        if method != "HEAD":
+        if 300 <= int(http_status or 0) < 400 and exc.headers:
+            location = exc.headers.get("Location", "")
+            if location:
+                redirect_location = _absolutize_candidate(url, location)
+                final_url = redirect_location
+        if read_body and method != "HEAD":
             try:
                 body_bytes = exc.read(MAX_BODY_BYTES)
             except Exception:
@@ -563,6 +584,7 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
         return {
             "http_status": 502,
             "final_url": final_url,
+            "redirect_location": redirect_location,
             "content_type": content_type,
             "body_bytes": body_bytes,
             "body_text": body_text,
@@ -572,6 +594,7 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
         return {
             "http_status": 500,
             "final_url": final_url,
+            "redirect_location": redirect_location,
             "content_type": content_type,
             "body_bytes": body_bytes,
             "body_text": body_text,
@@ -587,6 +610,7 @@ def _perform_request(channel: dict[str, Any], method: str, use_range: bool = Fal
     return {
         "http_status": http_status,
         "final_url": final_url,
+        "redirect_location": redirect_location,
         "content_type": content_type,
         "body_bytes": body_bytes,
         "body_text": body_text,
@@ -685,6 +709,31 @@ def resolve_channel(
     _notify(progress_callback, "正在检测直播链接...")
     if _is_cancelled(cancel_callback):
         return _cancelled_result(url)
+    if not explicit_media_url:
+        _notify(progress_callback, "正在检测原始地址重定向...")
+        redirect_info = _perform_request(
+            normalized_channel,
+            "GET",
+            use_range=False,
+            follow_redirects=False,
+            read_body=False,
+        )
+        redirect_url = clean_media_url(
+            redirect_info.get("redirect_location") or redirect_info.get("final_url") or ""
+        )
+        if _is_explicit_media_url(redirect_url):
+            result = _direct_media_result(
+                url,
+                http_status=redirect_info.get("http_status"),
+                final_url=redirect_url,
+                message="resolved from redirect without probing media body",
+                resolved_from="redirect",
+            )
+            _set_cached(normalized_channel, result)
+            return result
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(url)
+
     if explicit_media_url:
         _notify(progress_callback, "正在以浏览器媒体请求检测直连地址...")
         response_info = _perform_request(normalized_channel, "GET", use_range=True)
