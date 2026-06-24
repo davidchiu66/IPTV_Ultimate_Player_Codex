@@ -4,7 +4,7 @@
 
 🚀 **Promo page**: open [docs/index.html](docs/index.html), or publish the `docs/` directory with GitHub Pages.
 
-📌 **Project About**: see [ABOUT.md](ABOUT.md).
+📌 **Project About**: see [ABOUT.md](docs/ABOUT.md).
 
 📺 A Windows desktop IPTV and local media player built with **PySide6 + libmpv**. The project aims to combine live channel management, local playback, browser-assisted stream resolving, diagnostics, and a modern player UI in one maintainable application.
 
@@ -47,10 +47,12 @@
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10/11 64-bit (Windows 10 minimum; Windows 7 is not supported)
 - Python 3.12+ recommended
 - PySide6
 - libmpv
+
+> Windows 7 is not a supported target. The current stack depends on PySide6/Qt6, Qt WebEngine, and modern libmpv runtimes that are intended for Windows 10/11.
 
 By default, the application loads libmpv from:
 
@@ -109,16 +111,16 @@ main.py        Application entry point
 pyside_main.py Startup, logging, QtWebEngine and libmpv runtime setup
 ```
 
-Runtime folders are generated or used automatically:
+Runtime folders are generated or used automatically under the per-user data directory:
 
 ```text
-Channels/      Channel resources and local media directory
-EPGs/          EPG cache
-config/        Settings, favorites, and playlists
-logs/          Per-start log files
+%LocalAppData%/IPTV_Ultimate_Player_Codex/Channels/   Channel resources and local media directory
+%LocalAppData%/IPTV_Ultimate_Player_Codex/EPGs/       EPG cache
+%LocalAppData%/IPTV_Ultimate_Player_Codex/config/     Settings, favorites, and playlists
+%LocalAppData%/IPTV_Ultimate_Player_Codex/logs/       Per-start log files
 ```
 
-These runtime folders are usually not intended to be committed to GitHub.
+On first run, the app tries to migrate bundled `Channels/` and legacy `config/` data into the user data directory. Installed builds do not write runtime data into `C:\Program Files`.
 
 ## GitHub Actions Packaging
 

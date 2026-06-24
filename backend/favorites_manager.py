@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.media_types import resource_type_key
+from utils.app_paths import user_config_path
 
 
 FAVORITES_SCHEMA_VERSION = 1
@@ -16,8 +17,7 @@ class FavoritesManager:
     """Manage resource and channel favorites with JSON persistence."""
 
     def __init__(self, storage_path: str | None = None):
-        base_dir = Path(__file__).resolve().parent.parent
-        self.storage_path = Path(storage_path or base_dir / "config" / "favorites.json")
+        self.storage_path = Path(storage_path) if storage_path else user_config_path("favorites.json")
         self.data: dict[str, Any] = {
             "version": FAVORITES_SCHEMA_VERSION,
             "resource_favorites": [],

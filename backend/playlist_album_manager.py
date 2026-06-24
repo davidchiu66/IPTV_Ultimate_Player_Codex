@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.media_types import is_local_media, resource_type_key
+from utils.app_paths import user_config_path
 
 
 PLAYLIST_SCHEMA_VERSION = 1
@@ -15,8 +16,7 @@ class PlaylistAlbumManager:
     """Manage persisted local playback albums."""
 
     def __init__(self, storage_path: str | Path | None = None):
-        base_dir = Path.cwd()
-        self.storage_path = Path(storage_path or base_dir / "config" / "playlists.json")
+        self.storage_path = Path(storage_path) if storage_path else user_config_path("playlists.json")
         self.data: dict[str, Any] = {
             "version": PLAYLIST_SCHEMA_VERSION,
             "active_album_id": "default",

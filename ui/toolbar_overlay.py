@@ -56,7 +56,7 @@ class ToolbarOverlay(QFrame):
         self.left_layout.setSpacing(10)
 
         self.resource_button = self._make_icon_button("menu", "打开频道资源")
-        self.resource_button.clicked.connect(self.open_resource_requested.emit)
+        self.resource_button.clicked.connect(lambda: self._trigger_and_hide(self.open_resource_requested.emit))
         self.left_layout.addWidget(self.resource_button)
         self.left_layout.addStretch(1)
         layout.addWidget(self.left_group)
@@ -110,6 +110,12 @@ class ToolbarOverlay(QFrame):
         button = SvgIconButton(icon, 44, self)
         button.setToolTip(tooltip)
         return button
+
+    def _trigger_and_hide(self, callback):
+        """Run a toolbar action and then slide the toolbar out."""
+        callback()
+        if self.isVisible():
+            self.hide_with_animation()
 
     def eventFilter(self, obj, event):
         if event.type() in [QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.KeyPress]:
@@ -207,6 +213,6 @@ class ToolbarOverlay(QFrame):
 
     def add_settings_button(self, callback):
         self.settings_button = self._make_icon_button("settings", "设置")
-        self.settings_button.clicked.connect(callback)
+        self.settings_button.clicked.connect(lambda: self._trigger_and_hide(callback))
         self.right_layout.addWidget(self.settings_button)
         return self.settings_button

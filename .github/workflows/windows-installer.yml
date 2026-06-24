@@ -144,7 +144,7 @@ jobs:
           Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\readme_en.MD"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "..\ABOUT.md"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\docs\ABOUT.md"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\docs\assets\icons\app.ico"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion
 
           [Dirs]

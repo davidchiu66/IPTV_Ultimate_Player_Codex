@@ -3,11 +3,12 @@ import os
 import re
 
 from utils.helpers import b64url_to_hex
+from utils.app_paths import user_channels_dir
 
 
 class PlaylistManager:
-    def __init__(self, channels_dir="Channels"):
-        self.channels_dir = os.path.abspath(channels_dir)
+    def __init__(self, channels_dir=None):
+        self.channels_dir = os.path.abspath(str(channels_dir or user_channels_dir()))
         self.streams = []
         self.config_data = {}
         self.list_key = "Channels"

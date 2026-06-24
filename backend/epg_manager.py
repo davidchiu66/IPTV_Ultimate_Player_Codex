@@ -9,11 +9,12 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from utils.helpers import normalize_name, parse_xmltv_time
+from utils.app_paths import user_epg_dir
 
 
 class EPGManager:
-    def __init__(self, epg_dir="EPGs"):
-        self.epg_dir = os.path.abspath(epg_dir)
+    def __init__(self, epg_dir=None):
+        self.epg_dir = os.path.abspath(str(epg_dir or user_epg_dir()))
         if not os.path.exists(self.epg_dir):
             os.makedirs(self.epg_dir)
 

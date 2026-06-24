@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from utils.app_paths import ensure_user_data_dirs
 from utils.compatibility_settings import configure_compatibility_environment
 from utils.logging_utils import CappedLogHandle, app_log_path
 
@@ -102,13 +103,9 @@ def setup_session_logging():
 
 
 def ensure_directories():
-    # Only create runtime data directories. Source/package directories are
-    # bundled under _internal in packaged builds and should not appear as empty
-    # folders beside the installed executable.
-    dirs = ["EPGs"]
-    for directory in dirs:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+    # Runtime data must live under the per-user writable directory. The
+    # installation directory can be read-only under Program Files.
+    ensure_user_data_dirs()
 
 
 def _widevine_search_roots():

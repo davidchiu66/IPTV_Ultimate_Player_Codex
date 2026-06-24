@@ -2,8 +2,10 @@ import json
 import os
 import urllib.request
 
+from utils.app_paths import user_config_path
 
-SETTINGS_PATH = os.path.join("config", "app_settings.json")
+
+SETTINGS_PATH = str(user_config_path("app_settings.json"))
 DEFAULT_BROWSER_PROBE_TIMEOUT_MS = 30000
 MIN_BROWSER_PROBE_TIMEOUT_MS = 3000
 MAX_BROWSER_PROBE_TIMEOUT_MS = 120000

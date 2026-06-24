@@ -8,12 +8,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
 
 from ui.base_overlay import BaseOverlay
+from ui import message_dialogs
 from utils.media_types import resource_type_label
 
 
@@ -241,7 +241,7 @@ class PlaylistOverlay(BaseOverlay):
     def _emit_delete_album(self) -> None:
         album_id = self.active_album_id()
         if not album_id or album_id == "default":
-            QMessageBox.information(self, "播放列表", "默认专辑不能删除。")
+            message_dialogs.information(self, "播放列表", "默认专辑不能删除。")
             return
         self.delete_album_requested.emit(album_id)
 

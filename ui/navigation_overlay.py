@@ -73,7 +73,7 @@ class NavigationOverlay(BaseOverlay):
     favorites_refresh_requested = Signal()
 
     def __init__(self, parent=None):
-        super().__init__(parent, side="left", width=340)
+        super().__init__(parent, side="left", width=380)
         self.setObjectName("navOverlay")
         self._all_file_paths: list[str] = []
         self._resource_filter = "all"

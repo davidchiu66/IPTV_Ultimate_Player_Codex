@@ -12,7 +12,7 @@
 
 🚀 **项目宣传页**：可直接打开 [docs/index.html](docs/index.html)，或在 GitHub Pages 中将 `docs/` 作为发布目录。
 
-📌 **项目介绍**：详见 [ABOUT.md](ABOUT.md)。
+📌 **项目介绍**：详见 [ABOUT.md](docs/ABOUT.md)。
 
 📺 **IPTV Ultimate Player** 是一个基于 **PySide6 + libmpv** 的 Windows 桌面 IPTV/本地媒体播放器。它把直播源管理、本地媒体播放、网页嗅探解析、浏览器播放、收藏管理、播放列表和现代化播放器界面整合到一个可持续演进的工具里。
 
@@ -109,10 +109,12 @@
 
 ## 运行环境
 
-- Windows 10/11
+- Windows 10/11 64-bit（最低 Windows 10；不支持 Windows 7）
 - Python 3.12+ 推荐
 - PySide6
 - libmpv
+
+> Windows 7 不作为支持目标。当前技术栈依赖 PySide6/Qt6、Qt WebEngine 和新版 libmpv，相关运行时主要面向 Windows 10/11。
 
 项目默认从以下位置加载 libmpv：
 
@@ -158,7 +160,7 @@ python main.py
 
 ## 推荐使用方式
 
-1. 将频道文件或本地媒体目录放入 `Channels/`，或在界面中选择资源目录。
+1. 将频道文件或本地媒体目录放入用户数据目录下的 `Channels/`，或在界面中选择资源目录。
 2. 通过资源库面板加载资源目录。
 3. 双击频道或媒体资源开始播放。
 4. 鼠标移动到左边缘打开资源库或频道列表，移动到右边缘打开播放列表。
@@ -180,16 +182,16 @@ main.py         应用入口
 pyside_main.py  启动、日志、QtWebEngine/libmpv 运行时配置
 ```
 
-运行时会自动生成或使用：
+运行时会自动生成或使用用户数据目录：
 
 ```text
-Channels/       频道资源与本地资源目录
-EPGs/           节目单缓存
-config/         应用设置、收藏、播放列表
-logs/           每次启动生成的日志文件
+%LocalAppData%/IPTV_Ultimate_Player_Codex/Channels/   频道资源与本地资源目录
+%LocalAppData%/IPTV_Ultimate_Player_Codex/EPGs/       节目单缓存
+%LocalAppData%/IPTV_Ultimate_Player_Codex/config/     应用设置、收藏、播放列表
+%LocalAppData%/IPTV_Ultimate_Player_Codex/logs/       每次启动生成的日志文件
 ```
 
-这些运行数据通常不建议提交到 GitHub，项目已通过 `.gitignore` 默认忽略。
+首次运行时会尝试将内置 `Channels/`、旧版 `config/` 等数据迁移到用户数据目录。安装版不会向 `C:\Program Files` 写入运行数据。
 
 ## GitHub Actions 打包
 

@@ -6,7 +6,7 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizeGrip, QWidget
 
@@ -148,10 +148,22 @@ class _WindowGlyphButton(QPushButton):
 class _TitleLogo(QWidget):
     """Shared title-bar app mark."""
 
+    clicked = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(24, 24)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("关于 IPTV 播放器")
         self._pixmap = QPixmap(resource_path(_TITLE_ICON_PATH))
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        """Emit a click when the title logo is released with the left button."""
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         """Paint the shared title icon, falling back to a tiny vector mark."""
@@ -228,11 +240,11 @@ class GlassTitleBar(QFrame):
         close_button.clicked.connect(window.close)
         layout.addWidget(close_button)
 
-    def _is_window_button_at(self, pos: QPoint) -> bool:
-        """Return whether a title-bar position belongs to a window control button."""
+    def _is_interactive_child_at(self, pos: QPoint) -> bool:
+        """Return whether a title-bar position belongs to a clickable title child."""
         child = self.childAt(pos)
         while child is not None:
-            if isinstance(child, _WindowGlyphButton):
+            if isinstance(child, (_WindowGlyphButton, _TitleLogo)):
                 return True
             child = child.parentWidget()
         return False
@@ -256,7 +268,7 @@ class GlassTitleBar(QFrame):
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         """Maximize/restore main windows on title-bar double click."""
-        if self._is_window_button_at(event.position().toPoint()):
+        if self._is_interactive_child_at(event.position().toPoint()):
             super().mouseDoubleClickEvent(event)
             return
         if event.button() == Qt.LeftButton and self._maximize_button is not None:
@@ -267,7 +279,7 @@ class GlassTitleBar(QFrame):
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         """Start dragging the frameless parent window."""
-        if self._is_window_button_at(event.position().toPoint()):
+        if self._is_interactive_child_at(event.position().toPoint()):
             super().mousePressEvent(event)
             return
         if event.button() == Qt.LeftButton:

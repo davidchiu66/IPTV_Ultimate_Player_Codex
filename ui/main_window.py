@@ -1,6 +1,7 @@
 import json
 import os
 import copy
+import re
 import subprocess
 import threading
 import time
@@ -14,7 +15,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QInputDialog,
     QLabel,
     QListWidget,
     QMainWindow,
@@ -42,6 +42,9 @@ from ui.detail_overlay import DetailOverlay
 from ui.playlist_album_settings_dialog import PlaylistAlbumSettingsDialog
 from ui.playlist_overlay import PlaylistOverlay
 from ui.settings_overlay import SettingsOverlay
+from ui.about_dialog import AboutDialog
+from ui import message_dialogs
+from ui import input_dialogs
 from utils.diagnostics import (
     classify_failure,
     format_failure_details,
@@ -83,7 +86,7 @@ from utils.media_types import (
 )
 from utils.url_cleaning import clean_media_url
 from utils.i18n import get_language, set_language
-from utils.app_paths import resource_path, runtime_path
+from utils.app_paths import resource_path, runtime_path, user_channels_dir, user_epg_dir
 from ui.theme import APP_QSS
 from ui.dialog_style import apply_light_dialog_style
 from ui.window_chrome import handle_frameless_native_event, install_custom_window_chrome
@@ -205,8 +208,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IPTV 播放器")
-        self.playlist_mgr = PlaylistManager(channels_dir="Channels")
-        self.epg_manager = EPGManager(epg_dir="EPGs")
+        self.playlist_mgr = PlaylistManager(channels_dir=user_channels_dir())
+        self.epg_manager = EPGManager(epg_dir=user_epg_dir())
         self.favorites_mgr = FavoritesManager()
         self.playlist_album_mgr = PlaylistAlbumManager()
         self.current_config_path = ""
@@ -736,7 +739,7 @@ class MainWindow(QMainWindow):
         values = dialog.values()
         source_dir = values.get("source_dir") or ""
         if not source_dir or not os.path.isdir(source_dir):
-            QMessageBox.warning(self, "播放列表", "请选择有效的专辑文件夹。")
+            message_dialogs.warning(self, "播放列表", "请选择有效的专辑文件夹。")
             return
         album = self.playlist_album_mgr.create_album_from_directory(
             source_dir,
@@ -764,7 +767,7 @@ class MainWindow(QMainWindow):
         """Delete an album relationship."""
         album = self.playlist_album_mgr.get_album(album_id, validate=False)
         name = (album or {}).get("name") or "该专辑"
-        reply = QMessageBox.question(
+        reply = message_dialogs.question(
             self,
             "删除专辑",
             f"确定删除“{name}”吗？不会删除原始媒体文件。",
@@ -791,7 +794,7 @@ class MainWindow(QMainWindow):
         """Play a local media item from a playlist album."""
         path = item.get("path") or ""
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "播放列表", "该媒体文件已失效，无法播放。")
+            message_dialogs.warning(self, "播放列表", "该媒体文件已失效，无法播放。")
             self._refresh_playlist_overlay()
             return False
         item_id = str(item.get("id") or self.playlist_album_mgr.item_id(path))
@@ -871,7 +874,7 @@ class MainWindow(QMainWindow):
     def _on_resource_favorite_selected(self, path, favorite_id):
         """Use a resource favorite."""
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "资源收藏", "该收藏资源已失效，原文件不存在。")
+            message_dialogs.warning(self, "资源收藏", "该收藏资源已失效，原文件不存在。")
             self._refresh_favorites_views()
             return
         if favorite_id:
@@ -892,7 +895,7 @@ class MainWindow(QMainWindow):
     def _on_channel_favorite_selected(self, channel, favorite_id):
         """Play a channel favorite snapshot."""
         if not channel:
-            QMessageBox.warning(self, "频道收藏", "该频道收藏缺少频道快照。")
+            message_dialogs.warning(self, "频道收藏", "该频道收藏缺少频道快照。")
             return
         if favorite_id:
             self.favorites_mgr.touch_channel(favorite_id)
@@ -1205,7 +1208,15 @@ class MainWindow(QMainWindow):
     def _apply_styles(self):
         """Apply the shared glassmorphism application theme."""
         self.setStyleSheet(APP_QSS)
-        install_custom_window_chrome(self, show_window_controls=True, resizable=False)
+        title_bar = install_custom_window_chrome(self, show_window_controls=True, resizable=False)
+        if title_bar is not None and not getattr(self, "_about_title_logo_connected", False):
+            title_bar.logo.clicked.connect(self.show_about_dialog)
+            self._about_title_logo_connected = True
+
+    def show_about_dialog(self) -> None:
+        """Show the application about dialog from the custom title icon."""
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def nativeEvent(self, event_type, message):  # type: ignore[override]
         """Keep invisible resize borders after switching to a frameless title bar."""
@@ -1383,11 +1394,16 @@ class MainWindow(QMainWindow):
     def _looks_like_online_channel_file(self, url, content_type="", body_text=""):
         """Return whether the response appears to be a channel resource file."""
         extension = self._online_url_extension(url)
+        if self._looks_like_hls_media_playlist(content_type, body_text):
+            return False
         if self._is_online_channel_file_extension(extension):
             return True
         lower_type = str(content_type or "").lower()
         sample = str(body_text or "").lstrip()
         sample_lower = sample[:4096].lower()
+        non_empty_lines = [line.strip() for line in sample.splitlines() if line.strip()]
+        if len(non_empty_lines) == 1 and self._extract_online_media_url(sample, url):
+            return False
         if "mpegurl" in lower_type and "#extinf" in sample_lower:
             return True
         if "json" in lower_type and any(token in sample_lower for token in ("manifest", "channels", "streams", "url")):
@@ -1395,6 +1411,54 @@ class MainWindow(QMainWindow):
         if lower_type.startswith("text/") and any(token in sample_lower for token in ("#extinf", "group-title", "manifest", "http://", "https://")):
             return True
         return sample.startswith("#EXTM3U") and "#EXTINF" in sample
+
+    def _looks_like_hls_media_playlist(self, content_type="", body_text=""):
+        """Return whether text is an HLS media playlist rather than a channel list."""
+        lower_type = str(content_type or "").lower()
+        sample = str(body_text or "").lstrip()
+        sample_lower = sample[:8192].lower()
+        hls_markers = (
+            "#ext-x-targetduration",
+            "#ext-x-media-sequence",
+            "#ext-x-stream-inf",
+            "#ext-x-playlist-type",
+            "#ext-x-map",
+            "#ext-x-endlist",
+            "#ext-x-version",
+        )
+        if any(marker in sample_lower for marker in hls_markers):
+            return True
+        return "mpegurl" in lower_type and sample.startswith("#EXTM3U") and "group-title" not in sample_lower
+
+    def _extract_online_media_url(self, body_text="", base_url=""):
+        """Extract a directly playable media URL from a small text response."""
+        text = str(body_text or "").strip()
+        if not text:
+            return ""
+        candidates: list[str] = []
+        lines = [line.strip().strip("'\"") for line in text.splitlines() if line.strip()]
+        if len(lines) == 1 and lines[0].startswith(("http://", "https://")):
+            candidates.append(lines[0])
+        candidates.extend(re.findall(r"https?://[^\s'\"<>]+", text))
+
+        for candidate in candidates:
+            cleaned = candidate.rstrip("),;]")
+            extension = self._online_url_extension(cleaned)
+            if self._is_online_media_extension(extension):
+                return cleaned
+        return ""
+
+    def _is_online_direct_media_response(self, url, content_type="", body_text=""):
+        """Return whether a response should be played directly as online media."""
+        extension = self._online_url_extension(url)
+        lower_type = str(content_type or "").lower()
+        return (
+            self._is_online_media_extension(extension)
+            or self._looks_like_hls_media_playlist(content_type, body_text)
+            or lower_type.startswith(("video/", "audio/", "image/"))
+            or "dash+xml" in lower_type
+            or "mpegurl" in lower_type
+        )
 
     def _online_request_headers(self):
         """Return browser-like headers for online resource downloads."""
@@ -1468,7 +1532,12 @@ class MainWindow(QMainWindow):
             text = body.decode(encoding, errors="replace")
         except Exception:
             text = body.decode("utf-8", errors="replace")
-        return response.headers.get("Content-Type", ""), text
+        return {
+            "content_type": response.headers.get("Content-Type", ""),
+            "body_text": text,
+            "final_url": response.url or url,
+            "status_code": response.status_code,
+        }
 
     def _save_online_channel_file_response(self, url, response):
         """Save a downloaded online channel resource and return the local path."""
@@ -1531,7 +1600,7 @@ class MainWindow(QMainWindow):
             queue_source=saved_path or url,
         )
 
-    def _load_online_channel_resource_file(self, path, url, save=False):
+    def _load_online_channel_resource_file(self, path, url, save=False, final_url=""):
         """Load an online channel resource file and report empty/invalid results."""
         loaded = self.load_config(path)
         if not loaded:
@@ -1540,7 +1609,19 @@ class MainWindow(QMainWindow):
 
         channel_count = len(self.playlist_mgr.streams)
         if channel_count <= 0:
-            QMessageBox.warning(
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    body_text = handle.read(8192)
+            except OSError:
+                body_text = ""
+            media_url = self._extract_online_media_url(body_text, final_url or url)
+            if media_url or self._looks_like_hls_media_playlist("", body_text):
+                target_url = media_url or final_url or url
+                content_type = "" if media_url else "application/vnd.apple.mpegurl"
+                self._play_online_media_url(target_url, content_type)
+                self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(target_url)}", 3000)
+                return True
+            message_dialogs.warning(
                 self,
                 "未解析到频道",
                 "在线资源已下载，但没有解析出任何频道信息。\n\n"
@@ -1570,7 +1651,7 @@ class MainWindow(QMainWindow):
         url = str(url or "").strip()
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            QMessageBox.warning(self, "无法打开在线资源", "请输入有效的 http 或 https 地址")
+            message_dialogs.warning(self, "无法打开在线资源", "请输入有效的 http 或 https 地址")
             return
 
         try:
@@ -1593,35 +1674,45 @@ class MainWindow(QMainWindow):
 
             if not self._is_online_channel_file_extension(extension):
                 self._show_online_resource_message(f"正在探测在线资源：{url}...", busy=True)
-                content_type, body_text = self._probe_online_resource(url)
+                probe = self._probe_online_resource(url)
                 self._finish_online_resource_progress()
-                if not self._looks_like_online_channel_file(url, content_type, body_text):
+                content_type = probe.get("content_type", "")
+                body_text = probe.get("body_text", "")
+                final_url = probe.get("final_url") or url
+                media_url = self._extract_online_media_url(body_text, final_url)
+                if not self._looks_like_online_channel_file(final_url, content_type, body_text):
+                    target_url = media_url or final_url
                     if save:
-                        saved_path, _channel = self._save_online_media_descriptor(url, content_type)
+                        saved_path, _channel = self._save_online_media_descriptor(target_url, content_type)
                         if not saved_path:
                             self._show_online_resource_message("已取消", 2000)
                             return
-                        self._play_online_media_url(url, content_type, saved_path=saved_path)
+                        self._play_online_media_url(target_url, content_type, saved_path=saved_path)
                         self._show_online_resource_message(f"已保存并打开在线媒体：{os.path.basename(saved_path)}", 5000)
                     else:
-                        self._play_online_media_url(url, content_type)
-                        self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(url)}", 3000)
+                        self._play_online_media_url(target_url, content_type)
+                        self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(target_url)}", 3000)
                     return
 
             self._show_online_resource_message(f"正在下载在线资源：{url}...", busy=True)
             response = self._download_online_resource(url)
             self._finish_online_resource_progress()
-            if not self._looks_like_online_channel_file(url, response.headers.get("Content-Type", ""), response.text):
+            response_content_type = response.headers.get("Content-Type", "")
+            response_text = response.text
+            final_url = response.url or url
+            media_url = self._extract_online_media_url(response_text, final_url)
+            if not self._looks_like_online_channel_file(final_url, response_content_type, response_text):
+                target_url = media_url or final_url
                 if save:
-                    saved_path, _channel = self._save_online_media_descriptor(url, response.headers.get("Content-Type", ""))
+                    saved_path, _channel = self._save_online_media_descriptor(target_url, response_content_type)
                     if not saved_path:
                         self._show_online_resource_message("已取消", 2000)
                         return
-                    self._play_online_media_url(url, response.headers.get("Content-Type", ""), saved_path=saved_path)
+                    self._play_online_media_url(target_url, response_content_type, saved_path=saved_path)
                     self._show_online_resource_message(f"已保存并打开在线媒体：{os.path.basename(saved_path)}", 5000)
                 else:
-                    self._play_online_media_url(url, response.headers.get("Content-Type", ""))
-                    self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(url)}", 3000)
+                    self._play_online_media_url(target_url, response_content_type)
+                    self._show_online_resource_message(f"正在打开在线媒体：{self._online_resource_name(target_url)}", 3000)
                 return
 
             if save:
@@ -1636,10 +1727,10 @@ class MainWindow(QMainWindow):
                     delete=False,
                     encoding="utf-8",
                 ) as handle:
-                    handle.write(response.text)
+                    handle.write(response_text)
                     temp_path = handle.name
 
-            self._load_online_channel_resource_file(temp_path, url, save=save)
+            self._load_online_channel_resource_file(temp_path, url, save=save, final_url=final_url)
 
         except Exception as e:
             self._finish_online_resource_progress()
@@ -1648,7 +1739,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 requests = None
             if requests is not None and isinstance(e, requests.Timeout):
-                QMessageBox.critical(
+                message_dialogs.critical(
                     self,
                     "加载失败",
                     "下载超时，请检查网络连接或稍后重试"
@@ -1656,7 +1747,7 @@ class MainWindow(QMainWindow):
                 self._show_online_resource_message("下载超时", 3000)
                 return
             if requests is not None and isinstance(e, requests.HTTPError):
-                QMessageBox.critical(
+                message_dialogs.critical(
                     self,
                     "加载失败",
                     f"HTTP 错误 {e.response.status_code}：{e.response.reason}"
@@ -1664,14 +1755,14 @@ class MainWindow(QMainWindow):
                 self._show_online_resource_message("下载失败", 3000)
                 return
             if requests is not None and isinstance(e, requests.RequestException):
-                QMessageBox.critical(
+                message_dialogs.critical(
                     self,
                     "加载失败",
                     f"网络错误：{str(e)}"
                 )
                 self._show_online_resource_message("下载失败", 3000)
                 return
-            QMessageBox.critical(
+            message_dialogs.critical(
                 self,
                 "加载失败",
                 f"加载失败：{str(e)}"
@@ -1691,7 +1782,7 @@ class MainWindow(QMainWindow):
                 return
 
             if not is_channel_resource(path):
-                QMessageBox.warning(self, "无法打开资源", f"暂不支持该资源类型：{os.path.basename(path)}")
+                message_dialogs.warning(self, "无法打开资源", f"暂不支持该资源类型：{os.path.basename(path)}")
                 return
 
             if str(queue_kind or "").startswith("resource_"):
@@ -1729,7 +1820,7 @@ class MainWindow(QMainWindow):
         success, err = self.playlist_mgr.load_file(filepath, on_epg_found=self._on_epg_url_discovered)
 
         if not success:
-            QMessageBox.critical(self, "加载失败", f"无法加载文件：{err}")
+            message_dialogs.critical(self, "加载失败", f"无法加载文件：{err}")
             return False
 
         self.current_config_path = filepath
@@ -1770,7 +1861,7 @@ class MainWindow(QMainWindow):
             return
 
         self._fallback_dialog_open = True
-        reply = QMessageBox.question(
+        reply = message_dialogs.question(
             self,
             "发现节目单",
             f"检测到 {len(self.discovered_epg_urls)} 个节目单地址，是否自动下载？",
@@ -1789,7 +1880,7 @@ class MainWindow(QMainWindow):
 
     def save_current_config(self):
         if not self.current_config_path:
-            QMessageBox.warning(self, "保存", "没有打开的配置文件")
+            message_dialogs.warning(self, "保存", "没有打开的配置文件")
             return
 
         try:
@@ -1798,7 +1889,7 @@ class MainWindow(QMainWindow):
             self.is_dirty = False
             self.statusBar().showMessage(f"已保存 - {os.path.basename(self.current_config_path)}")
         except Exception as e:
-            QMessageBox.critical(self, "保存失败", str(e))
+            message_dialogs.critical(self, "保存失败", str(e))
 
     def play_channel(self, channel, queue_kind=None, queue_key=None, queue_source=None):
         if not channel:
@@ -1870,7 +1961,7 @@ class MainWindow(QMainWindow):
             "trace_id": error_info.get("trace_id") or self._current_trace_id,
         })
         failure = classify_failure(error_info)
-        dialog = QMessageBox(self)
+        dialog = message_dialogs.create_message_box(self, "")
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle("播放失败")
         dialog.setText(f"{failure['title']}：{name}")
@@ -1917,7 +2008,7 @@ class MainWindow(QMainWindow):
         elif http_status in {500, 502, 503, 504}:
             detail_text = detail or "直播源服务器当前异常"
 
-        dialog = QMessageBox(self)
+        dialog = message_dialogs.create_message_box(self, "")
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle("播放失败")
         dialog.setText(f"{failure['title']}：{name}")
@@ -1944,7 +2035,7 @@ class MainWindow(QMainWindow):
     def configure_browser_probe_dialog(self):
         current_timeout_ms = get_browser_probe_timeout_ms()
         current_timeout_seconds = max(1, current_timeout_ms // 1000)
-        value, ok = QInputDialog.getInt(
+        value, ok = input_dialogs.get_int(
             self,
             "探测超时",
             "浏览器探测超时（秒）：",
@@ -2075,7 +2166,7 @@ class MainWindow(QMainWindow):
         try:
             if failure_action == "local-failed" or (self.current_channel or {}).get("_IsLocalMedia"):
                 failure = classify_failure(error_info)
-                dialog = QMessageBox(self)
+                dialog = message_dialogs.create_message_box(self, "")
                 dialog.setIcon(QMessageBox.Warning)
                 dialog.setWindowTitle("本地媒体播放失败")
                 dialog.setText(f"无法播放本地媒体：{name}")
@@ -2098,7 +2189,7 @@ class MainWindow(QMainWindow):
                 self._show_probe_retry_dialog(name, format_name, kind, code, detail, error_info)
                 return
             failure = classify_failure(error_info)
-            dialog = QMessageBox(self)
+            dialog = message_dialogs.create_message_box(self, "")
             dialog.setIcon(QMessageBox.Warning)
             dialog.setWindowTitle("播放失败")
             dialog.setText(f"{failure['title']}：{name}")
@@ -2281,7 +2372,7 @@ class MainWindow(QMainWindow):
         user_proxy = get_user_proxy()
         effective_proxy, source = get_effective_proxy(self.current_channel or {})
 
-        text, ok = QInputDialog.getText(
+        text, ok = input_dialogs.get_text(
             self,
             "代理设置",
             "用户代理地址（系统代理存在时将优先生效）：",
@@ -2300,7 +2391,7 @@ class MainWindow(QMainWindow):
             "direct": "直连",
         }.get(source, source)
         system_text = system_proxy or "无"
-        QMessageBox.information(
+        message_dialogs.information(
             self,
             "代理设置",
             f"系统代理：{system_text}\n当前生效：{display_proxy}\n来源：{display_source}",
@@ -2330,7 +2421,7 @@ class MainWindow(QMainWindow):
     def edit_channel(self):
         channel = self.current_channel
         if not channel:
-            QMessageBox.information(self, "编辑", "请先播放或选择一个频道")
+            message_dialogs.information(self, "编辑", "请先播放或选择一个频道")
             return
 
         dialog = ChannelEditorDialog(channel, channel.get("Category", ""), self)
@@ -2353,10 +2444,10 @@ class MainWindow(QMainWindow):
     def delete_channel(self):
         channel = self.current_channel
         if not channel:
-            QMessageBox.information(self, "删除", "请先播放或选择一个频道")
+            message_dialogs.information(self, "删除", "请先播放或选择一个频道")
             return
 
-        reply = QMessageBox.question(
+        reply = message_dialogs.question(
             self,
             "确认删除",
             f"确定要删除频道 {channel.get('Name', '未命名')} 吗？",
@@ -2382,12 +2473,12 @@ class MainWindow(QMainWindow):
     def delete_channel_file(self, file_path):
         """删除资源文件"""
         if not file_path or not os.path.exists(file_path):
-            QMessageBox.warning(self, "删除文件", "文件不存在或路径无效")
+            message_dialogs.warning(self, "删除文件", "文件不存在或路径无效")
             return
 
         # 确认对话框
         file_name = os.path.basename(file_path)
-        reply = QMessageBox.question(
+        reply = message_dialogs.question(
             self,
             "确认删除文件",
             f"确定要删除资源文件 \"{file_name}\" 吗？\n\n此操作无法撤销！",
@@ -2452,7 +2543,7 @@ class MainWindow(QMainWindow):
                 self.refresh_directory(self.playlist_mgr.channels_dir)
 
         except Exception as e:
-            QMessageBox.critical(self, "删除失败", f"无法删除文件：{e}")
+            message_dialogs.critical(self, "删除失败", f"无法删除文件：{e}")
 
     def load_local_epg(self):
         self.statusBar().showMessage("正在加载本地节目单...")
@@ -2464,7 +2555,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已加载节目单：{file_count} 个文件，{channel_count} 个频道")
 
     def download_epg_dialog(self):
-        url, ok = QInputDialog.getText(
+        url, ok = input_dialogs.get_text(
             self,
             "下载节目单",
             "请输入节目单 URL：",
@@ -2488,11 +2579,11 @@ class MainWindow(QMainWindow):
             self.load_local_epg()
 
     def _on_epg_download_error(self, error):
-        QMessageBox.critical(self, "下载失败", f"节目单下载失败：{error}")
+        message_dialogs.critical(self, "下载失败", f"节目单下载失败：{error}")
         self.statusBar().showMessage("节目单下载失败")
 
     def set_port_dialog(self):
-        port, ok = QInputDialog.getInt(
+        port, ok = input_dialogs.get_int(
             self,
             "设置端口",
             "浏览器播放端口：",
@@ -2733,7 +2824,7 @@ class MainWindow(QMainWindow):
         browsers = self._get_installed_browsers()
 
         if not browsers:
-            QMessageBox.information(self, "选择浏览器", "未检测到已安装的浏览器，将使用系统默认浏览器。")
+            message_dialogs.information(self, "选择浏览器", "未检测到已安装的浏览器，将使用系统默认浏览器。")
             self._open_browser_player_internal(None)
             return
 
@@ -2821,11 +2912,11 @@ class MainWindow(QMainWindow):
             browser_path: 浏览器可执行文件路径，None表示使用默认浏览器
         """
         if not self.playlist_mgr.streams:
-            QMessageBox.information(self, "浏览器播放", "没有可播放的频道")
+            message_dialogs.information(self, "浏览器播放", "没有可播放的频道")
             return
 
         if not os.path.exists(TEMPLATE_FILE):
-            QMessageBox.warning(self, "浏览器播放", f"找不到模板文件：{TEMPLATE_FILE}")
+            message_dialogs.warning(self, "浏览器播放", f"找不到模板文件：{TEMPLATE_FILE}")
             return
 
         self.start_http_server()
@@ -2857,7 +2948,7 @@ class MainWindow(QMainWindow):
                 webbrowser.open(url)
                 self.statusBar().showMessage(f"已在默认浏览器打开播放器：{url}")
         except Exception as e:
-            QMessageBox.critical(self, "打开失败", f"无法打开浏览器：{e}")
+            message_dialogs.critical(self, "打开失败", f"无法打开浏览器：{e}")
 
     def start_http_server(self):
         if self.httpd:
@@ -2872,7 +2963,7 @@ class MainWindow(QMainWindow):
 
             self.statusBar().showMessage(f"HTTP 服务器已启动：端口 {self.server_port}")
         except Exception as e:
-            QMessageBox.critical(self, "服务器启动失败", f"无法启动 HTTP 服务器：{e}")
+            message_dialogs.critical(self, "服务器启动失败", f"无法启动 HTTP 服务器：{e}")
             self.httpd = None
 
     def stop_http_server(self):
@@ -2885,7 +2976,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.is_dirty:
-            reply = QMessageBox.question(
+            reply = message_dialogs.question(
                 self,
                 "未保存的更改",
                 "有未保存的更改，是否保存？",
