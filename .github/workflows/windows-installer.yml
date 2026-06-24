@@ -72,6 +72,11 @@ jobs:
           Write-Host "RELEASE_TAG=$tag"
           Write-Host "PUBLISH_RELEASE=$publishRelease"
 
+      - name: Write app version resource
+        shell: pwsh
+        run: |
+          Set-Content -Path app_version.txt -Value $env:APP_VERSION -Encoding UTF8
+
       - name: Install Python dependencies
         shell: pwsh
         run: |
@@ -97,6 +102,7 @@ jobs:
             --hidden-import PySide6.QtWebEngineCore `
             --hidden-import PySide6.QtWebEngineWidgets `
             --hidden-import PySide6.QtWebEngineQuick `
+            --add-data "app_version.txt;." `
             --add-data "frontend;frontend" `
             --add-data "i18n;i18n" `
             --add-data "docs/assets;docs/assets" `

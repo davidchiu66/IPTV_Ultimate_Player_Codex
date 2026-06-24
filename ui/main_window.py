@@ -201,6 +201,7 @@ class OnlineResourceProgressDialog(QDialog):
 
 class MainWindow(QMainWindow):
     epg_loaded_signal = Signal(int, int)
+    epg_load_error_signal = Signal(str)
     epg_download_success_signal = Signal(str, bool)
     epg_download_error_signal = Signal(str)
     resource_scan_finished_signal = Signal(int, str, list, str)
@@ -231,12 +232,17 @@ class MainWindow(QMainWindow):
         self._last_adjacent_switch_at = 0.0
         self._playlist_outro_triggered = False
         self._playlist_intro_applied_key = ""
+        self._playlist_memory_record_key = ""
+        self._playlist_memory_last_saved_at = 0.0
+        self._playlist_memory_last_saved_position = -1.0
+        self._pending_playlist_memory_seek = None
         self._fullscreen_cursor_hidden = False
         self._fullscreen_cursor_hide_timer = QTimer(self)
         self._fullscreen_cursor_hide_timer.setSingleShot(True)
         self._fullscreen_cursor_hide_timer.setInterval(2500)
         self._fullscreen_cursor_hide_timer.timeout.connect(self._hide_fullscreen_cursor_if_idle)
         self._online_progress_dialog = None
+        self._epg_load_warning_shown = False
         self._playback_queue_context = {
             "kind": "",
             "current_key": "",
@@ -248,6 +254,7 @@ class MainWindow(QMainWindow):
         self._browser_cache = None
 
         self.epg_loaded_signal.connect(self._on_epg_loaded)
+        self.epg_load_error_signal.connect(self._on_epg_load_error)
         self.epg_download_success_signal.connect(self._on_epg_download_success)
         self.epg_download_error_signal.connect(self._on_epg_download_error)
         self.resource_scan_finished_signal.connect(self._on_resource_scan_finished)
@@ -383,6 +390,7 @@ class MainWindow(QMainWindow):
         self.playlist_overlay.edit_album_requested.connect(self._edit_playlist_album)
         self.playlist_overlay.refresh_album_requested.connect(self._refresh_playlist_album)
         self.playlist_overlay.item_selected.connect(self._on_playlist_item_selected)
+        self.playlist_overlay.memory_play_requested.connect(self._play_playlist_from_memory)
 
         # 详情覆盖层
         self.detail_overlay.add_requested.connect(self.add_channel)
@@ -392,8 +400,12 @@ class MainWindow(QMainWindow):
     def _position_floating(self):
         """重新定位悬浮时钟到右上角（相对 video_stack_host 区域）"""
         if hasattr(self, "floating_clock"):
+            if self._should_reduce_fullscreen_overlays():
+                self.floating_clock.hide()
+                return
             host = self.player_panel.video_stack_host
             self.floating_clock.position_at_top_right(host.width())
+            self.floating_clock.show()
             self.floating_clock.raise_()
 
     def _annotate_channel_favorites(self):
@@ -504,8 +516,11 @@ class MainWindow(QMainWindow):
 
     def _set_playback_queue_context(self, kind: str, current_key: str = "", source: str = "") -> None:
         """Remember which queue should answer previous/next commands."""
+        kind_text = str(kind or "")
+        if kind_text != "playlist_album":
+            self._pending_playlist_memory_seek = None
         self._playback_queue_context = {
-            "kind": str(kind or ""),
+            "kind": kind_text,
             "current_key": str(current_key or ""),
             "source": str(source or ""),
         }
@@ -790,6 +805,52 @@ class MainWindow(QMainWindow):
         item = {"id": item_id, "path": path}
         self._play_playlist_item(album_id, item)
 
+    def _play_playlist_from_memory(self, album_id: str) -> None:
+        """Play the remembered item and seek to its last position."""
+        memory = self.playlist_album_mgr.playback_memory(album_id)
+        if not memory:
+            message_dialogs.information(self, "播放列表", "当前播放列表没有播放记忆点。")
+            return
+
+        album = self.playlist_album_mgr.get_album(album_id, validate=True)
+        if not album:
+            message_dialogs.information(self, "播放列表", "当前播放列表没有播放记忆点。")
+            return
+
+        memory_item_id = str(memory.get("item_id") or "")
+        memory_path = self.playlist_album_mgr.normalize_path(memory.get("path") or "")
+        items = [item for item in album.get("items") or [] if item.get("status") == "ok"]
+        item = next((entry for entry in items if str(entry.get("id") or "") == memory_item_id), None)
+        if item is None and memory_path:
+            memory_key = self.playlist_album_mgr.path_key(memory_path)
+            item = next(
+                (
+                    entry for entry in items
+                    if self.playlist_album_mgr.path_key(entry.get("path") or "") == memory_key
+                ),
+                None,
+            )
+        if item is None:
+            message_dialogs.warning(self, "播放列表", "播放记忆点对应的媒体已失效。")
+            self._refresh_playlist_overlay()
+            return
+
+        try:
+            position = max(0.0, float(memory.get("position") or 0.0))
+        except (TypeError, ValueError):
+            position = 0.0
+        if position <= 0:
+            message_dialogs.information(self, "播放列表", "当前播放列表没有播放记忆点。")
+            return
+
+        if self._play_playlist_item(album_id, item):
+            self._pending_playlist_memory_seek = {
+                "album_id": album_id,
+                "item_id": str(item.get("id") or memory_item_id),
+                "position": position,
+            }
+            self.playlist_overlay.hide_with_animation()
+
     def _play_playlist_item(self, album_id: str, item: dict) -> bool:
         """Play a local media item from a playlist album."""
         path = item.get("path") or ""
@@ -798,6 +859,10 @@ class MainWindow(QMainWindow):
             self._refresh_playlist_overlay()
             return False
         item_id = str(item.get("id") or self.playlist_album_mgr.item_id(path))
+        self._pending_playlist_memory_seek = None
+        self._playlist_memory_record_key = ""
+        self._playlist_memory_last_saved_at = 0.0
+        self._playlist_memory_last_saved_position = -1.0
         self._playlist_outro_triggered = False
         self._playlist_intro_applied_key = ""
         self._play_local_media_file(path, queue_kind="playlist_album", queue_key=item_id, queue_source=album_id)
@@ -833,6 +898,76 @@ class MainWindow(QMainWindow):
             return
         self._play_adjacent_playlist_album(1, auto_advance=True)
 
+    @staticmethod
+    def _format_memory_position(seconds: float) -> str:
+        """Format a playback memory position."""
+        value = max(0, int(seconds or 0))
+        hours, remainder = divmod(value, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _apply_pending_playlist_memory_seek(self, context: dict, duration_value: float) -> bool:
+        """Apply delayed seek for playlist memory playback."""
+        pending = self._pending_playlist_memory_seek
+        if not pending:
+            return False
+        album_id = str(context.get("source") or "")
+        item_id = str(context.get("current_key") or "")
+        if album_id != str(pending.get("album_id") or "") or item_id != str(pending.get("item_id") or ""):
+            return False
+        try:
+            position = max(0.0, float(pending.get("position") or 0.0))
+        except (TypeError, ValueError):
+            position = 0.0
+        if position <= 0:
+            self._pending_playlist_memory_seek = None
+            return False
+        if duration_value > 0:
+            position = min(position, max(0.0, duration_value - 0.5))
+        self.player_panel.seek_absolute(position)
+        self._playlist_intro_applied_key = item_id
+        self._playlist_outro_triggered = False
+        self._pending_playlist_memory_seek = None
+        self.statusBar().showMessage(f"已从记忆点 {self._format_memory_position(position)} 开始播放", 3000)
+        return True
+
+    def _maybe_record_playlist_playback_memory(self, context: dict, position_value: float, duration_value: float, settings: dict) -> None:
+        """Persist playlist playback memory with throttling."""
+        if not settings.get("remember_playback"):
+            return
+        album_id = str(context.get("source") or "")
+        item_id = str(context.get("current_key") or "")
+        path = (self.current_channel or {}).get("Manifest") or ""
+        if not album_id or not item_id or not path or not os.path.exists(path):
+            return
+        if duration_value <= 0 or position_value < 1.0:
+            return
+
+        record_key = f"{album_id}|{item_id}"
+        now = time.monotonic()
+        if record_key != self._playlist_memory_record_key:
+            self._playlist_memory_record_key = record_key
+            self._playlist_memory_last_saved_at = 0.0
+            self._playlist_memory_last_saved_position = -1.0
+
+        if (
+            now - self._playlist_memory_last_saved_at < 5.0
+            and abs(position_value - self._playlist_memory_last_saved_position) < 10.0
+        ):
+            return
+
+        if self.playlist_album_mgr.update_playback_memory(
+            album_id,
+            item_id,
+            path,
+            position_value,
+            duration_value,
+        ):
+            self._playlist_memory_last_saved_at = now
+            self._playlist_memory_last_saved_position = position_value
+
     def _on_playback_progress_changed(self, position, duration) -> None:
         """Handle playlist intro/outro skipping."""
         context = self._playback_queue_context or {}
@@ -847,6 +982,9 @@ class MainWindow(QMainWindow):
             return
         settings = self._active_playlist_settings()
         current_key = str(context.get("current_key") or "")
+        if self._apply_pending_playlist_memory_seek(context, duration_value):
+            return
+        self._maybe_record_playlist_playback_memory(context, position_value, duration_value, settings)
         intro_seconds = int(settings.get("intro_seconds") or 0)
         if (
             settings.get("skip_intro")
@@ -1050,7 +1188,11 @@ class MainWindow(QMainWindow):
     def _raise_interactive_overlays(self):
         """Keep side panels above the loading mask so they stay clickable."""
         if hasattr(self, "floating_clock"):
-            self.floating_clock.raise_()
+            if self._should_reduce_fullscreen_overlays():
+                self.floating_clock.hide()
+            else:
+                self.floating_clock.show()
+                self.floating_clock.raise_()
         for overlay in (
             self.toolbar_overlay,
             self.nav_overlay,
@@ -1065,6 +1207,8 @@ class MainWindow(QMainWindow):
     def _toggle_fullscreen(self):
         """切换主窗口全屏。整窗切换可保持覆盖层层级与父子关系不变，
         避免把原生 mpv 窗口单独提升为顶层窗口导致覆盖层错位/失效。"""
+        entering = not self.isFullScreen()
+        self._log_fullscreen_state("fullscreen.toggle.before", entering=entering)
         if self.isFullScreen():
             self.showNormal()
             self._restore_fullscreen_cursor()
@@ -1075,6 +1219,88 @@ class MainWindow(QMainWindow):
         # 等待新尺寸生效后重新对齐覆盖层
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._reposition_visible_overlays)
+        QTimer.singleShot(0, self._apply_fullscreen_overlay_policy)
+        QTimer.singleShot(200, lambda entering=entering: self._log_fullscreen_state("fullscreen.toggle.after", entering=entering))
+
+    def _fullscreen_debug_info(self) -> dict:
+        host = self.player_panel.video_stack_host
+        screen = self.windowHandle().screen() if self.windowHandle() else QGuiApplication.primaryScreen()
+        info = {
+            "window_fullscreen": self.isFullScreen(),
+            "window_maximized": self.isMaximized(),
+            "window_geometry": {
+                "x": self.x(),
+                "y": self.y(),
+                "w": self.width(),
+                "h": self.height(),
+            },
+            "host_geometry": {
+                "x": host.x(),
+                "y": host.y(),
+                "w": host.width(),
+                "h": host.height(),
+            },
+            "current_is_local": is_local_media_channel(self.current_channel or {}),
+            "overlay_reduced": self._should_reduce_fullscreen_overlays(),
+            "floating_clock_visible": bool(getattr(self, "floating_clock", None) and self.floating_clock.isVisible()),
+            "toolbar_visible": bool(getattr(self, "toolbar_overlay", None) and self.toolbar_overlay.isVisible()),
+            "side_overlay_visible": self._side_overlay_visible(),
+        }
+        if screen is not None:
+            geometry = screen.geometry()
+            available = screen.availableGeometry()
+            info.update(
+                {
+                    "screen_name": screen.name(),
+                    "screen_geometry": {
+                        "x": geometry.x(),
+                        "y": geometry.y(),
+                        "w": geometry.width(),
+                        "h": geometry.height(),
+                    },
+                    "screen_available": {
+                        "x": available.x(),
+                        "y": available.y(),
+                        "w": available.width(),
+                        "h": available.height(),
+                    },
+                    "device_pixel_ratio": screen.devicePixelRatio(),
+                    "logical_dpi": screen.logicalDotsPerInch(),
+                    "physical_dpi": screen.physicalDotsPerInch(),
+                    "refresh_rate": screen.refreshRate(),
+                }
+            )
+        return info
+
+    def _log_fullscreen_state(self, event: str, entering: bool = False) -> None:
+        channel = self.current_channel or {}
+        try:
+            log_event(
+                event,
+                "info",
+                trace_id=str(channel.get("_TraceId") or self._current_trace_id or ""),
+                channel=channel,
+                entering=bool(entering),
+                state=self._fullscreen_debug_info(),
+            )
+        except Exception:
+            pass
+
+    def _should_reduce_fullscreen_overlays(self) -> bool:
+        """Whether always-on overlays should be reduced during playback."""
+        return False
+
+    def _apply_fullscreen_overlay_policy(self) -> None:
+        if not hasattr(self, "floating_clock"):
+            return
+        if self._should_reduce_fullscreen_overlays():
+            self.floating_clock.hide()
+            return
+        self._position_floating()
+
+    def _apply_local_fullscreen_renderer_policy(self, entering: bool | None = None) -> None:
+        """Fullscreen no longer reloads local playback; local media uses one stable renderer."""
+        return
 
     def _event_belongs_to_main_window(self, watched) -> bool:
         """Return whether an application event belongs to this window."""
@@ -1165,11 +1391,14 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event):
         """快捷键处理：Esc 退出全屏，F1/F11 切换全屏"""
         if event.key() == Qt.Key_Escape and self.isFullScreen():
+            self._log_fullscreen_state("fullscreen.escape.before", entering=False)
             self.showNormal()
             self._restore_fullscreen_cursor()
             self._fullscreen_cursor_hide_timer.stop()
             from PySide6.QtCore import QTimer
             QTimer.singleShot(0, self._reposition_visible_overlays)
+            QTimer.singleShot(0, self._apply_fullscreen_overlay_policy)
+            QTimer.singleShot(200, lambda: self._log_fullscreen_state("fullscreen.escape.after", entering=False))
             return
         elif event.key() in (Qt.Key_F1, Qt.Key_F11):
             self._toggle_fullscreen()
@@ -1179,6 +1408,12 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_visible_overlays()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            self._apply_fullscreen_overlay_policy()
+            self._log_fullscreen_state("window.state_changed", entering=self.isFullScreen())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1191,7 +1426,11 @@ class MainWindow(QMainWindow):
 
     def _raise_all_overlays(self):
         """确保所有覆盖层和触发区域在 MPV 窗口之上"""
-        self.floating_clock.raise_()
+        if self._should_reduce_fullscreen_overlays():
+            self.floating_clock.hide()
+        else:
+            self.floating_clock.show()
+            self.floating_clock.raise_()
         # 提升所有覆盖层
         self.toolbar_overlay.raise_()
         self.nav_overlay.raise_()
@@ -1908,6 +2147,7 @@ class MainWindow(QMainWindow):
         self._current_trace_id = str(existing_trace_id or new_trace_id())
         channel["_TraceId"] = self._current_trace_id
         self.current_channel = channel
+        self._apply_fullscreen_overlay_policy()
         log_event(
             "playback.start",
             "info",
@@ -1948,6 +2188,7 @@ class MainWindow(QMainWindow):
 
     def stop_playback(self):
         self.player_panel.stop_playback()
+        self._apply_fullscreen_overlay_policy()
 
     def _show_probe_retry_dialog(self, name, format_name, kind, code, detail, error_info=None):
         error_info = dict(error_info or {})
@@ -2548,11 +2789,29 @@ class MainWindow(QMainWindow):
     def load_local_epg(self):
         self.statusBar().showMessage("正在加载本地节目单...")
         self.epg_manager.load_local_epg(
-            on_finish=lambda file_count, channel_count: self.epg_loaded_signal.emit(file_count, channel_count)
+            on_finish=lambda file_count, channel_count: self.epg_loaded_signal.emit(file_count, channel_count),
+            on_error=lambda error: self.epg_load_error_signal.emit(error),
         )
 
     def _on_epg_loaded(self, file_count, channel_count):
         self.statusBar().showMessage(f"已加载节目单：{file_count} 个文件，{channel_count} 个频道")
+
+    def _on_epg_load_error(self, error):
+        self.statusBar().showMessage("节目单加载失败，EPG 信息已临时禁用，播放不受影响", 5000)
+        log_event(
+            "epg.load_failed",
+            "warning",
+            error=str(error or ""),
+            index_path=getattr(self.epg_manager, "index_db_path", ""),
+        )
+        if self._epg_load_warning_shown:
+            return
+        self._epg_load_warning_shown = True
+        message_dialogs.warning(
+            self,
+            "节目单加载失败",
+            str(error or "本地节目单索引加载失败，EPG 信息已临时禁用，播放不受影响。"),
+        )
 
     def download_epg_dialog(self):
         url, ok = input_dialogs.get_text(

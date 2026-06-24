@@ -158,8 +158,8 @@ def summarize_channel(channel):
     )
 
 
-def log_event(event, level="info", trace_id="", channel=None, **data):
-    if not should_log(level):
+def log_event(event, level="info", trace_id="", channel=None, force=False, **data):
+    if not force and not should_log(level):
         return False
     diagnostics = get_diagnostics_settings()
     path = diagnostics.get("log_path") or DIAGNOSTICS_LOG_PATH

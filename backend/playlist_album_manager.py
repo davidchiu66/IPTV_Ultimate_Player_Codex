@@ -68,6 +68,7 @@ class PlaylistAlbumManager:
             "intro_seconds": 0,
             "skip_outro": False,
             "outro_seconds": 0,
+            "remember_playback": False,
         }
 
     def default_album(self) -> dict[str, Any]:
@@ -129,8 +130,11 @@ class PlaylistAlbumManager:
             settings.update(normalized.get("settings") or {})
             settings["intro_seconds"] = max(0, int(settings.get("intro_seconds") or 0))
             settings["outro_seconds"] = max(0, int(settings.get("outro_seconds") or 0))
+            settings["remember_playback"] = bool(settings.get("remember_playback"))
             normalized["settings"] = settings
             normalized["items"] = [self._normalize_item(item) for item in normalized.get("items") or [] if isinstance(item, dict)]
+            memory = normalized.get("playback_memory") or {}
+            normalized["playback_memory"] = self._normalize_memory(memory)
             normalized["created_at"] = normalized.get("created_at") or self.now_iso()
             normalized["updated_at"] = normalized.get("updated_at") or normalized["created_at"]
             albums.append(normalized)
@@ -147,12 +151,37 @@ class PlaylistAlbumManager:
             "duration": item.get("duration"),
         }
 
+    def _normalize_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
+        """Return normalized playback memory metadata."""
+        if not isinstance(memory, dict):
+            return {}
+        path = self.normalize_path(memory.get("path") or "")
+        try:
+            position = max(0.0, float(memory.get("position") or 0.0))
+        except (TypeError, ValueError):
+            position = 0.0
+        try:
+            duration = max(0.0, float(memory.get("duration") or 0.0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        item_id = str(memory.get("item_id") or self.item_id(path) if path else "")
+        if not item_id or not path or position <= 0:
+            return {}
+        return {
+            "item_id": item_id,
+            "path": path,
+            "position": position,
+            "duration": duration,
+            "updated_at": str(memory.get("updated_at") or self.now_iso()),
+        }
+
     def albums(self, validate: bool = True) -> list[dict[str, Any]]:
         """Return albums, optionally annotating item status."""
         result = []
         for album in self.data.get("albums", []):
             copy_album = dict(album)
             copy_album["settings"] = dict(album.get("settings") or {})
+            copy_album["playback_memory"] = dict(album.get("playback_memory") or {})
             copy_album["items"] = [dict(item) for item in album.get("items") or []]
             if validate:
                 for item in copy_album["items"]:
@@ -246,6 +275,7 @@ class PlaylistAlbumManager:
                 settings.update(updates["settings"])
                 settings["intro_seconds"] = max(0, int(settings.get("intro_seconds") or 0))
                 settings["outro_seconds"] = max(0, int(settings.get("outro_seconds") or 0))
+                settings["remember_playback"] = bool(settings.get("remember_playback"))
                 album["settings"] = settings
             if updates.get("rescan"):
                 album["items"] = self.scan_directory(album.get("source_dir") or "", bool(album.get("recursive")))
@@ -253,6 +283,43 @@ class PlaylistAlbumManager:
             self.save()
             return dict(album)
         return None
+
+    def playback_memory(self, album_id: str) -> dict[str, Any]:
+        """Return persisted playback memory for an album."""
+        album = self.get_album(album_id, validate=False)
+        if not album:
+            return {}
+        return self._normalize_memory(album.get("playback_memory") or {})
+
+    def update_playback_memory(
+        self,
+        album_id: str,
+        item_id: str,
+        path: str,
+        position: float,
+        duration: float = 0.0,
+    ) -> bool:
+        """Persist the last playback position for an album."""
+        normalized_path = self.normalize_path(path)
+        memory = self._normalize_memory(
+            {
+                "item_id": item_id or self.item_id(normalized_path),
+                "path": normalized_path,
+                "position": position,
+                "duration": duration,
+                "updated_at": self.now_iso(),
+            }
+        )
+        if not memory:
+            return False
+        for album in self.data.get("albums", []):
+            if album.get("id") != album_id:
+                continue
+            album["playback_memory"] = memory
+            album["updated_at"] = self.now_iso()
+            self.save()
+            return True
+        return False
 
     def delete_album(self, album_id: str) -> bool:
         """Delete an album relationship without deleting files."""

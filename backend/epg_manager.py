@@ -31,11 +31,14 @@ class EPGManager:
         self._resolve_cache_version = 0
 
     def _list_xml_files(self):
-        return [
-            os.path.join(self.epg_dir, f)
-            for f in os.listdir(self.epg_dir)
-            if f.lower().endswith(".xml")
-        ]
+        try:
+            return [
+                os.path.join(self.epg_dir, f)
+                for f in os.listdir(self.epg_dir)
+                if f.lower().endswith(".xml")
+            ]
+        except OSError:
+            return []
 
     def _index_is_fresh(self):
         if not os.path.exists(self.index_db_path):
@@ -51,11 +54,66 @@ class EPGManager:
             return False
 
     def _connect(self):
+        os.makedirs(self.epg_dir, exist_ok=True)
         conn = sqlite3.connect(self.index_db_path, timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
+        try:
+            conn.execute("PRAGMA busy_timeout=30000")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                # Some user data locations/security tools reject WAL sidecar files.
+                # EPG is a cache, so falling back is better than failing playback.
+                conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA temp_store=MEMORY")
+        except Exception:
+            conn.close()
+            raise
         return conn
+
+    def _index_sidecar_files(self):
+        return [
+            self.index_db_path,
+            f"{self.index_db_path}-wal",
+            f"{self.index_db_path}-shm",
+            f"{self.index_db_path}-journal",
+        ]
+
+    def _remove_index_cache(self):
+        """Remove the derived EPG index database and SQLite sidecar files."""
+        for path in self._index_sidecar_files():
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+
+    def _clear_runtime_cache(self):
+        """Clear in-memory EPG caches after an unrecoverable index error."""
+        with self._lock:
+            self.epg_channel_map = {}
+            self.epg_data = {}
+            self._program_cache.clear()
+        self._resolve_cache_version += 1
+        self._resolve_channel_id_cached.cache_clear()
+
+    def _format_load_error(self, error):
+        detail = str(error) or error.__class__.__name__
+        if isinstance(error, sqlite3.Error):
+            if "disk i/o error" in detail.lower():
+                reason = "EPG 索引数据库读写失败，可能是磁盘空间不足、目录不可写、索引文件损坏，或被安全软件/同步软件占用。"
+            else:
+                reason = "EPG 索引数据库异常。"
+            return (
+                f"{reason}\n"
+                "程序已临时禁用 EPG 信息，不影响直播或本地媒体播放。\n"
+                f"索引路径：{self.index_db_path}\n"
+                f"错误详情：{detail}"
+            )
+        return (
+            "本地节目单加载失败，程序已临时禁用 EPG 信息，不影响播放。\n"
+            f"错误详情：{detail}"
+        )
 
     def _reset_index(self):
         with self._connect() as conn:
@@ -201,7 +259,25 @@ class EPGManager:
 
         return valid_files_count, total_programs
 
-    def load_local_epg(self, on_finish=None):
+    def _load_local_epg_once(self):
+        """Load or rebuild the local EPG index once."""
+        if not self._index_is_fresh():
+            valid_files_count, _ = self._rebuild_index()
+        else:
+            valid_files_count = len(self._list_xml_files())
+
+        self.epg_channel_map = self._load_channel_map_from_db()
+        channel_count, _ = self._load_stats_from_db()
+
+        with self._lock:
+            self.epg_data = {}
+            self._program_cache.clear()
+
+        self._resolve_cache_version += 1
+        self._resolve_channel_id_cached.cache_clear()
+        return valid_files_count, channel_count
+
+    def load_local_epg(self, on_finish=None, on_error=None):
         def task():
             # 尝试获取锁（非阻塞）
             acquired = self._build_lock.acquire(blocking=False)
@@ -214,21 +290,11 @@ class EPGManager:
                 while True:
                     self._refresh_event.clear()
 
-                    if not self._index_is_fresh():
-                        valid_files_count, _ = self._rebuild_index()
-                    else:
-                        valid_files_count = len(self._list_xml_files())
-
-                    self.epg_channel_map = self._load_channel_map_from_db()
-                    channel_count, _ = self._load_stats_from_db()
-
-                    with self._lock:
-                        self.epg_data = {}
-                        self._program_cache.clear()
-
-                    # 清除解析缓存
-                    self._resolve_cache_version += 1
-                    self._resolve_channel_id_cached.cache_clear()
+                    try:
+                        valid_files_count, channel_count = self._load_local_epg_once()
+                    except sqlite3.Error:
+                        self._remove_index_cache()
+                        valid_files_count, channel_count = self._load_local_epg_once()
 
                     if on_finish:
                         on_finish(valid_files_count, channel_count)
@@ -236,6 +302,10 @@ class EPGManager:
                     # 检查构建期间是否有刷新请求
                     if not self._refresh_event.is_set():
                         break
+            except Exception as exc:
+                self._clear_runtime_cache()
+                if on_error:
+                    on_error(self._format_load_error(exc))
             finally:
                 self._build_lock.release()
 

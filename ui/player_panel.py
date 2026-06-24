@@ -1,4 +1,5 @@
 import ctypes
+import threading
 import time
 from ctypes import POINTER, Structure, Union, byref, c_char_p, c_double, c_int, c_longlong, c_size_t, c_ulonglong, c_void_p, cast
 from pathlib import Path
@@ -29,7 +30,7 @@ from utils.compatibility_settings import is_safe_mode_enabled
 from utils.proxy_settings import get_effective_proxy
 from utils.url_cleaning import clean_media_url
 from utils.app_paths import resource_path
-from utils.logging_utils import app_log_path
+from utils.logging_utils import mpv_runtime_log_path
 
 
 DEFAULT_BROWSER_USER_AGENT = (
@@ -130,8 +131,8 @@ class ResolveChannelWorker(QObject):
 
 MPV_RENDERER_OPTION_SETS = [
     {
-        "name": "gpu-next-d3d11",
-        "vo": "gpu-next",
+        "name": "gpu-d3d11",
+        "vo": "gpu",
         "gpu-api": "d3d11",
         "gpu-context": "d3d11",
         "hwdec": "auto-safe",
@@ -139,8 +140,8 @@ MPV_RENDERER_OPTION_SETS = [
         "idle": "yes",
     },
     {
-        "name": "gpu-d3d11",
-        "vo": "gpu",
+        "name": "gpu-next-d3d11",
+        "vo": "gpu-next",
         "gpu-api": "d3d11",
         "gpu-context": "d3d11",
         "hwdec": "auto-safe",
@@ -162,6 +163,58 @@ MPV_RENDERER_OPTION_SETS = [
     },
     {
         "name": "default-fallback",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+]
+
+LOCAL_MPV_RENDERER_OPTION_SETS = [
+    {
+        "name": "local-gpu-opengl-software",
+        "vo": "gpu",
+        "gpu-api": "opengl",
+        "gpu-context": "win",
+        "hwdec": "no",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "local-gpu-basic-software",
+        "vo": "gpu",
+        "hwdec": "no",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "local-gpu-d3d11-copy",
+        "vo": "gpu",
+        "gpu-api": "d3d11",
+        "gpu-context": "d3d11",
+        "hwdec": "d3d11va-copy",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "local-gpu-basic-copy",
+        "vo": "gpu",
+        "hwdec": "auto-copy",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "local-direct3d-nohwdec",
+        "vo": "direct3d",
+        "hwdec": "no",
+        "keep-open": "yes",
+        "idle": "yes",
+    },
+    {
+        "name": "local-gpu-d3d11-native",
+        "vo": "gpu",
+        "gpu-api": "d3d11",
+        "gpu-context": "d3d11",
+        "gpu-hwdec-interop": "d3d11va",
+        "hwdec": "d3d11va",
         "keep-open": "yes",
         "idle": "yes",
     },
@@ -192,14 +245,81 @@ SAFE_MPV_RENDERER_OPTION_SETS = [
 
 MPV_PLAYBACK_POLICIES = {
     "local_smooth": {
-        "name": "local-4k-smooth",
+        "name": "local-4k-software-stable",
         "options": {
             "profile": "fast",
-            "hwdec": "auto",
+            "hwdec": "no",
             "cache": "auto",
             "cache-secs": "30",
             "demuxer-max-bytes": "384MiB",
             "demuxer-max-back-bytes": "128MiB",
+            "vd-lavc-dr": "no",
+            "scale": "bilinear",
+            "cscale": "bilinear",
+            "dscale": "bilinear",
+            "correct-downscaling": "no",
+            "sigmoid-upscaling": "no",
+            "deband": "no",
+            "interpolation": "no",
+            "video-sync": "audio",
+            "framedrop": "vo",
+            "vd-lavc-threads": "0",
+        },
+    },
+    "local_compat": {
+        "name": "local-compat-safe",
+        "options": {
+            "profile": "fast",
+            "hwdec": "no",
+            "cache": "auto",
+            "cache-secs": "20",
+            "demuxer-max-bytes": "256MiB",
+            "demuxer-max-back-bytes": "64MiB",
+            "vd-lavc-dr": "no",
+            "scale": "bilinear",
+            "cscale": "bilinear",
+            "dscale": "bilinear",
+            "correct-downscaling": "no",
+            "sigmoid-upscaling": "no",
+            "deband": "no",
+            "interpolation": "no",
+            "video-sync": "audio",
+            "framedrop": "vo",
+            "vd-lavc-threads": "0",
+        },
+    },
+    "local_copyback": {
+        "name": "local-d3d11-copyback",
+        "options": {
+            "profile": "fast",
+            "hwdec": "d3d11va-copy",
+            "cache": "auto",
+            "cache-secs": "30",
+            "demuxer-max-bytes": "384MiB",
+            "demuxer-max-back-bytes": "128MiB",
+            "vd-lavc-dr": "no",
+            "scale": "bilinear",
+            "cscale": "bilinear",
+            "dscale": "bilinear",
+            "correct-downscaling": "no",
+            "sigmoid-upscaling": "no",
+            "deband": "no",
+            "interpolation": "no",
+            "video-sync": "audio",
+            "framedrop": "vo",
+            "vd-lavc-threads": "0",
+        },
+    },
+    "local_fullscreen_safe": {
+        "name": "local-fullscreen-software-stable",
+        "options": {
+            "profile": "fast",
+            "hwdec": "no",
+            "cache": "auto",
+            "cache-secs": "30",
+            "demuxer-max-bytes": "384MiB",
+            "demuxer-max-back-bytes": "128MiB",
+            "vd-lavc-dr": "no",
             "scale": "bilinear",
             "cscale": "bilinear",
             "dscale": "bilinear",
@@ -213,13 +333,14 @@ MPV_PLAYBACK_POLICIES = {
         },
     },
     "local_quality": {
-        "name": "local-high-quality",
+        "name": "local-high-quality-software",
         "options": {
-            "hwdec": "auto",
+            "hwdec": "no",
             "cache": "auto",
             "cache-secs": "45",
             "demuxer-max-bytes": "512MiB",
             "demuxer-max-back-bytes": "192MiB",
+            "vd-lavc-dr": "no",
             "scale": "spline36",
             "cscale": "spline36",
             "dscale": "mitchell",
@@ -233,14 +354,15 @@ MPV_PLAYBACK_POLICIES = {
         },
     },
     "local_extreme": {
-        "name": "local-extreme-quality",
+        "name": "local-extreme-quality-software",
         "options": {
             "profile": "gpu-hq",
-            "hwdec": "auto",
+            "hwdec": "no",
             "cache": "auto",
             "cache-secs": "90",
             "demuxer-max-bytes": "1GiB",
             "demuxer-max-back-bytes": "512MiB",
+            "vd-lavc-dr": "no",
             "scale": "ewa_lanczossharp",
             "cscale": "ewa_lanczossharp",
             "dscale": "mitchell",
@@ -375,7 +497,7 @@ class HoverZone(QWidget):
 NATIVE_MPV_AVAILABLE = False
 NATIVE_MPV_ERROR = ""
 _NATIVE_MPV_LIB = None
-_MPV_RUNTIME_LOG = app_log_path()
+_MPV_RUNTIME_LOG = mpv_runtime_log_path()
 
 MPV_FORMAT_STRING = 1
 MPV_FORMAT_FLAG = 3
@@ -503,7 +625,7 @@ class NativeMpvAdapter:
         if rc < 0:
             raise RuntimeError(f"{name}: {self._error_text(rc)}")
 
-    def initialize(self):
+    def initialize(self, force_safe=False, prefer_local_stable=False, local_renderer_mode=""):
         if self.handle is not None:
             return
         if not NATIVE_MPV_AVAILABLE:
@@ -520,8 +642,40 @@ class NativeMpvAdapter:
         diagnostics = get_diagnostics_settings()
         mpv_log_enabled = bool(diagnostics.get("enabled")) and diagnostics.get("level") == "debug"
         log_opts = {"log-file": str(_MPV_RUNTIME_LOG), "msg-level": "all=v"} if mpv_log_enabled else {}
+        if mpv_log_enabled:
+            log_event(
+                "mpv.runtime_log_configured",
+                "debug",
+                log_path=str(_MPV_RUNTIME_LOG),
+            )
         option_sets = []
-        renderer_sets = SAFE_MPV_RENDERER_OPTION_SETS if is_safe_mode_enabled() else MPV_RENDERER_OPTION_SETS
+        if is_safe_mode_enabled() or force_safe:
+            renderer_sets = SAFE_MPV_RENDERER_OPTION_SETS
+        elif prefer_local_stable:
+            mode = str(local_renderer_mode or "").lower()
+            if mode in {"opengl", "compat", "software"}:
+                renderer_sets = [
+                    item
+                    for item in LOCAL_MPV_RENDERER_OPTION_SETS
+                    if str(item.get("name") or "") == "local-gpu-opengl-software"
+                ] + [
+                    item
+                    for item in LOCAL_MPV_RENDERER_OPTION_SETS
+                    if str(item.get("name") or "") not in {
+                        "local-gpu-d3d11-native",
+                        "local-gpu-opengl-software",
+                    }
+                ]
+            elif mode == "copy":
+                renderer_sets = [
+                    item
+                    for item in LOCAL_MPV_RENDERER_OPTION_SETS
+                    if str(item.get("name") or "") != "local-gpu-d3d11-native"
+                ]
+            else:
+                renderer_sets = LOCAL_MPV_RENDERER_OPTION_SETS
+        else:
+            renderer_sets = MPV_RENDERER_OPTION_SETS
         for option_set in renderer_sets:
             opts = dict(option_set)
             opts.update(log_opts)
@@ -572,13 +726,38 @@ class NativeMpvAdapter:
         self.handle = None
         return handle
 
-    def destroy_handle(self, handle):
+    def _command_handle_async(self, handle, *args):
+        if handle is None:
+            return
+        arr = (c_char_p * (len(args) + 1))()
+        for index, arg in enumerate(args):
+            arr[index] = str(arg).encode("utf-8")
+        arr[len(args)] = None
+        try:
+            _NATIVE_MPV_LIB.mpv_command_async(handle, 0, arr)
+        except Exception:
+            pass
+
+    def destroy_handle(self, handle, stop_first=False):
         if handle is None:
             return
         try:
+            if stop_first:
+                self._command_handle_async(handle, "stop")
             _NATIVE_MPV_LIB.mpv_terminate_destroy(handle)
         except Exception:
             pass
+
+    def destroy_handle_async(self, handle, delay_ms=0, stop_first=False):
+        if handle is None:
+            return
+
+        def worker():
+            if delay_ms:
+                time.sleep(max(0, int(delay_ms)) / 1000.0)
+            self.destroy_handle(handle, stop_first=stop_first)
+
+        threading.Thread(target=worker, name="mpv-destroy", daemon=True).start()
 
     def destroy_if_handle(self, expected_handle):
         if self.handle is not None and self.handle == expected_handle:
@@ -783,6 +962,12 @@ class MpvVideoWidget(QWidget):
         self._play_request_id = 0
         self._resolve_jobs = {}
         self._resolve_contexts = {}
+        self._video_stall_last_position = None
+        self._video_stall_last_frame = None
+        self._video_stall_since = 0.0
+        self._video_stall_recovering = False
+        self._last_debug_snapshot_at = 0.0
+        self._last_debug_snapshot_key = ""
 
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(500)
@@ -805,6 +990,103 @@ class MpvVideoWidget(QWidget):
         self._single_click_timer.setInterval(max(260, QApplication.doubleClickInterval() + 40))
         self._single_click_timer.timeout.connect(self._toggle_pause_from_video_click)
         self._suppress_click_pause_until = 0.0
+
+    def _reset_video_stall_watch(self):
+        self._video_stall_last_position = None
+        self._video_stall_last_frame = None
+        self._video_stall_since = 0.0
+
+    def _screen_debug_info(self):
+        window = self.window()
+        screen = window.windowHandle().screen() if window and window.windowHandle() else self.screen()
+        info = {
+            "widget_size": {"w": self.width(), "h": self.height()},
+            "native_win_id": int(self.winId()) if self.winId() else 0,
+            "window_fullscreen": bool(window.isFullScreen()) if window else False,
+        }
+        if screen is not None:
+            geometry = screen.geometry()
+            available = screen.availableGeometry()
+            info.update(
+                {
+                    "screen_name": screen.name(),
+                    "screen_geometry": {
+                        "x": geometry.x(),
+                        "y": geometry.y(),
+                        "w": geometry.width(),
+                        "h": geometry.height(),
+                    },
+                    "screen_available": {
+                        "x": available.x(),
+                        "y": available.y(),
+                        "w": available.width(),
+                        "h": available.height(),
+                    },
+                    "device_pixel_ratio": screen.devicePixelRatio(),
+                    "logical_dpi": screen.logicalDotsPerInch(),
+                    "physical_dpi": screen.physicalDotsPerInch(),
+                    "refresh_rate": screen.refreshRate(),
+                }
+            )
+        return info
+
+    def _mpv_debug_snapshot(self):
+        if self.player is None:
+            return {"player": "none"}
+        props = {}
+        for name in (
+            "vo-configured",
+            "hwdec-current",
+            "current-vo",
+            "estimated-frame-number",
+            "time-pos",
+            "duration",
+            "container-fps",
+            "display-fps",
+            "mistimed-frame-count",
+            "vo-delayed-frame-count",
+            "decoder-frame-drop-count",
+            "frame-drop-count",
+            "video-sync",
+            "pause",
+            "idle-active",
+            "eof-reached",
+            "cache-buffering-state",
+        ):
+            try:
+                props[name] = self.player.get_property(name)
+            except Exception as exc:
+                props[name] = f"<error: {exc}>"
+        return {
+            "properties": props,
+            "video_params_simple": self.player.video_params if self.player else {},
+            "renderer_profile": getattr(self._native_player, "renderer_profile", ""),
+            "renderer_options": getattr(self._native_player, "renderer_options", {}),
+            "renderer_failures": getattr(self._native_player, "renderer_failures", []),
+            "screen": self._screen_debug_info(),
+        }
+
+    def _log_mpv_snapshot(self, event, level="debug", force=False, **extra):
+        channel = self.current_channel or {}
+        trace_id = str(channel.get("_TraceId") or "")
+        try:
+            log_event(
+                event,
+                level,
+                trace_id=trace_id,
+                channel=channel,
+                force=force,
+                snapshot=self._mpv_debug_snapshot(),
+                **extra,
+            )
+        except Exception:
+            pass
+
+    def _safe_mpv_debug_snapshot(self):
+        try:
+            return self._mpv_debug_snapshot()
+        except Exception as exc:
+            return {"snapshot_error": str(exc)}
 
     def _set_loading_text(self, text):
         text = (text or "正在加载内容...").strip()
@@ -864,6 +1146,17 @@ class MpvVideoWidget(QWidget):
         except Exception:
             return False
 
+    def _numeric_player_property(self, name):
+        if self.player is None:
+            return None
+        try:
+            value = self.player.get_property(name)
+            if value in (None, "", False):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
     def _apply_player_options(self, options):
         applied = {}
         failed = {}
@@ -876,6 +1169,12 @@ class MpvVideoWidget(QWidget):
 
     def _playback_policy(self, channel, stream_format):
         if stream_format == "local" or is_local_media_channel(channel):
+            if (channel or {}).get("_ForceLocalCompat"):
+                return MPV_PLAYBACK_POLICIES["local_compat"]
+            if (channel or {}).get("_ForceLocalFullscreenSafe"):
+                return MPV_PLAYBACK_POLICIES["local_fullscreen_safe"]
+            if (channel or {}).get("_ForceLocalCopyBack"):
+                return MPV_PLAYBACK_POLICIES["local_compat"]
             local_mode = get_local_playback_mode()
             if local_mode == "extreme":
                 return MPV_PLAYBACK_POLICIES["local_extreme"]
@@ -928,6 +1227,7 @@ class MpvVideoWidget(QWidget):
             ("cache-secs", "30"),
             ("demuxer-max-bytes", "256MiB"),
             ("demuxer-max-back-bytes", "128MiB"),
+            ("vd-lavc-dr", "yes"),
             ("scale", "auto"),
             ("cscale", "auto"),
             ("dscale", "auto"),
@@ -1115,10 +1415,14 @@ class MpvVideoWidget(QWidget):
                 old_handle = None
         self.player = None
         if old_handle is not None:
-            QTimer.singleShot(180, lambda handle=old_handle: self._native_player.destroy_handle(handle))
+            self._native_player.destroy_handle_async(old_handle, delay_ms=180, stop_first=True)
         self.current_channel = channel
         self._failure_sent = False
         self._finish_announced = False
+        self._reset_video_stall_watch()
+        self._video_stall_recovering = False
+        self._last_debug_snapshot_at = 0.0
+        self._last_debug_snapshot_key = ""
         self._static_tracks = []
         self._runtime_tracks = []
         self._last_track_signature = None
@@ -1128,7 +1432,17 @@ class MpvVideoWidget(QWidget):
 
     def _initialize_player_or_fail(self, channel):
         try:
-            self._native_player.initialize()
+            self._native_player.initialize(
+                force_safe=bool((channel or {}).get("_ForceLocalCompat")),
+                prefer_local_stable=is_local_media_channel(channel),
+                local_renderer_mode=(
+                    "opengl"
+                    if (channel or {}).get("_ForceLocalFullscreenSafe")
+                    else "compat"
+                    if (channel or {}).get("_ForceLocalCopyBack") or (channel or {}).get("_ForceLocalCompat")
+                    else ""
+                ),
+            )
             self.player = self._native_player
             log_event(
                 "mpv.initialized",
@@ -1254,6 +1568,7 @@ class MpvVideoWidget(QWidget):
             self._apply_stream_options(channel, stream_format)
         self.player["force-media-title"] = stream_name
         self.player.command_async("loadfile", stream_url, "replace")
+        self._schedule_start_position_seek(channel, self._play_request_id)
         action_text = "正在打开" if stream_format == "local" else "正在连接"
         policy_name = policy.get("name", stream_format)
         self.status_changed.emit(f"{action_text}：{stream_name} ({stream_format.upper()}, {policy_name}, {self._player_backend})")
@@ -1262,6 +1577,30 @@ class MpvVideoWidget(QWidget):
         self.pause_changed.emit(bool(self.player["pause"]))
         self.volume_state_changed.emit(float(self.player["volume"] or 100), bool(self.player["mute"]))
         self._begin_startup_watchers(channel)
+
+    def _schedule_start_position_seek(self, channel, request_id):
+        try:
+            position = max(0.0, float((channel or {}).get("_StartPosition") or 0.0))
+        except (TypeError, ValueError):
+            position = 0.0
+        if position <= 0:
+            return
+
+        def try_seek(attempt=0):
+            if int(request_id) != int(self._play_request_id) or self.player is None:
+                return
+            duration = self._numeric_player_property("duration")
+            target = position
+            if duration and duration > 0:
+                target = min(position, max(0.0, duration - 0.5))
+            self.seek_absolute(target)
+            self.status_changed.emit(f"已从 {int(target // 60):02d}:{int(target % 60):02d} 附近恢复播放")
+            if duration and duration > 0:
+                return
+            if attempt < 8:
+                QTimer.singleShot(450, lambda: try_seek(attempt + 1))
+
+        QTimer.singleShot(450, try_seek)
 
     def _apply_resolved_channel(self, channel, resolved):
         applied = dict(channel or {})
@@ -1737,11 +2076,14 @@ class MpvVideoWidget(QWidget):
             channel=self.current_channel,
             stream_format=self._startup_stream_format,
             renderer_profile=getattr(self._native_player, "renderer_profile", ""),
+            renderer_options=getattr(self._native_player, "renderer_options", {}),
+            renderer_failures=getattr(self._native_player, "renderer_failures", []),
             hwdec_current=self.player.get_property("hwdec-current") if self.player else None,
             video_codec=self.player.get_property("video-codec-name") if self.player else None,
             video_params=self.player.video_params if self.player else {},
             decoder_drops=self.player.get_property("decoder-frame-drop-count") if self.player else None,
             vo_drops=self.player.get_property("frame-drop-count") if self.player else None,
+            snapshot=self._safe_mpv_debug_snapshot(),
         )
         self.playback_started.emit(self.current_channel)
 
@@ -1925,6 +2267,129 @@ class MpvVideoWidget(QWidget):
         except Exception:
             pass
 
+    def seek_absolute(self, seconds):
+        if self.player is None:
+            return
+        try:
+            value = max(0.0, float(seconds or 0.0))
+            self.player.seek(value, reference="absolute")
+        except Exception:
+            pass
+
+    def _check_video_render_stall(self, position, duration):
+        if self.player is None or self._video_stall_recovering:
+            return
+        channel = self.current_channel or {}
+        if not is_local_media_channel(channel):
+            self._reset_video_stall_watch()
+            return
+        try:
+            if bool(self.player["pause"]):
+                self._reset_video_stall_watch()
+                return
+        except Exception:
+            return
+        if not duration or float(duration or 0) <= 0 or not self._video_started():
+            self._reset_video_stall_watch()
+            return
+
+        frame = self._numeric_player_property("estimated-frame-number")
+        if frame is None:
+            return
+
+        try:
+            position_value = float(position or 0.0)
+        except (TypeError, ValueError):
+            return
+        now = time.monotonic()
+        last_position = self._video_stall_last_position
+        last_frame = self._video_stall_last_frame
+        self._video_stall_last_position = position_value
+        self._video_stall_last_frame = frame
+        if last_position is None or last_frame is None:
+            return
+
+        position_advanced = position_value - float(last_position or 0.0) >= 0.35
+        frame_stuck = frame <= float(last_frame or 0.0) + 0.01
+        if position_advanced and frame_stuck:
+            if not self._video_stall_since:
+                self._video_stall_since = now
+                self._log_mpv_snapshot(
+                    "mpv.video_render_stall_suspected",
+                    "warning",
+                    position=position_value,
+                    last_position=last_position,
+                    frame=frame,
+                    last_frame=last_frame,
+                )
+            elif now - self._video_stall_since >= 6.0:
+                self._recover_video_render_stall(position_value)
+            return
+
+        if frame > float(last_frame or 0.0) + 0.01:
+            self._video_stall_since = 0.0
+
+    def _maybe_log_runtime_snapshot(self, position, duration):
+        if self.player is None:
+            return
+        channel = self.current_channel or {}
+        if not is_local_media_channel(channel):
+            return
+        window = self.window()
+        is_fullscreen = bool(window.isFullScreen()) if window else False
+        now = time.monotonic()
+        interval = 10.0 if is_fullscreen else 30.0
+        if now - self._last_debug_snapshot_at < interval:
+            return
+        frame = self._numeric_player_property("estimated-frame-number")
+        key = f"{int(position or 0)}|{int(frame or -1)}|{int(is_fullscreen)}"
+        if key == self._last_debug_snapshot_key:
+            return
+        self._last_debug_snapshot_at = now
+        self._last_debug_snapshot_key = key
+        self._log_mpv_snapshot(
+            "mpv.local_fullscreen_snapshot" if is_fullscreen else "mpv.local_window_snapshot",
+            "debug",
+            position=float(position or 0.0),
+            duration=duration,
+            frame=frame,
+        )
+
+    def _recover_video_render_stall(self, position):
+        if self._video_stall_recovering:
+            return
+        channel = dict(self.current_channel or {})
+        if not channel:
+            return
+        if channel.get("_ForceLocalCompat"):
+            self._video_stall_recovering = True
+            self._emit_failure(
+                "video-stall",
+                "本地视频画面渲染已停止，但音频/进度仍在继续。已尝试兼容渲染恢复仍未成功，建议切换本地渲染模式或开启兼容/安全启动模式后重试。",
+            )
+            return
+        self._video_stall_recovering = True
+        start_position = max(0.0, float(position or 0.0) - 1.0)
+        channel["_ForceLocalCompat"] = True
+        channel["_StartPosition"] = start_position
+        trace_id = str(channel.get("_TraceId") or "")
+        log_event(
+            "mpv.video_render_stall",
+            "error",
+            trace_id=trace_id,
+            channel=channel,
+            position=start_position,
+            renderer_profile=getattr(self._native_player, "renderer_profile", ""),
+            renderer_options=getattr(self._native_player, "renderer_options", {}),
+            hwdec_current=self.player.get_property("hwdec-current") if self.player else None,
+            video_codec=self.player.get_property("video-codec-name") if self.player else None,
+            video_params=self.player.video_params if self.player else {},
+            snapshot=self._safe_mpv_debug_snapshot(),
+        )
+        self.status_changed.emit("检测到本地视频画面渲染停滞，正在切换到软件解码兼容模式并从当前位置恢复...")
+        self._emit_loading_state(True)
+        QTimer.singleShot(0, lambda channel=channel: self.play_channel(channel, _reload=True))
+
     def set_quality(self, key):
         valid = {item[0] for item in self.QUALITY_PRESETS}
         if key not in valid or key == self._quality:
@@ -1992,15 +2457,19 @@ class MpvVideoWidget(QWidget):
             self._emit_loading_state(False)
             return
         player = self.player
-        stopped_handle = getattr(player, "handle", None)
-        self.player = None
         try:
-            player.command_async("stop")
+            if is_local_media_channel(self.current_channel or {}):
+                self._log_mpv_snapshot("mpv.stop_requested", "info")
         except Exception:
             pass
+        self.player = None
+        try:
+            stopped_handle = player.detach_handle()
+        except Exception:
+            stopped_handle = getattr(player, "handle", None)
         self.status_changed.emit("已停止播放。")
         self._emit_loading_state(False)
-        QTimer.singleShot(120, lambda: self._native_player.destroy_if_handle(stopped_handle))
+        self._native_player.destroy_handle_async(stopped_handle, delay_ms=0, stop_first=True)
 
     def _toggle_pause_from_video_click(self):
         if time.monotonic() < self._suppress_click_pause_until:
@@ -2031,6 +2500,8 @@ class MpvVideoWidget(QWidget):
             position = self.player.get_property("time-pos")
             self.progress_changed.emit(float(position or 0.0), duration)
             self.duration_changed.emit(duration)
+            self._maybe_log_runtime_snapshot(float(position or 0.0), duration)
+            self._check_video_render_stall(float(position or 0.0), duration)
             finished = self._local_media_is_finished()
             self.pause_changed.emit(True if finished else bool(self.player["pause"]))
             if finished and not self._finish_announced:
@@ -2307,6 +2778,37 @@ class PlayerPanel(QFrame):
             layout.setSpacing(0)
         self._set_triggers_enabled(True)
         self._enable_triggers_interaction()
+
+    def seek_absolute(self, seconds):
+        """Seek current media to an absolute position in seconds."""
+        if self.mpv_widget is not None:
+            self.mpv_widget.seek_absolute(seconds)
+
+    def current_position(self):
+        if self.mpv_widget is None or self.mpv_widget.player is None:
+            return 0.0
+        try:
+            return float(self.mpv_widget.player.get_property("time-pos") or 0.0)
+        except Exception:
+            return 0.0
+
+    def use_local_fullscreen_safe_renderer(self, enabled):
+        if self.mpv_widget is None or self.mpv_widget.current_channel is None:
+            return False
+        channel = dict(self.mpv_widget.current_channel or {})
+        if not is_local_media_channel(channel):
+            return False
+        enabled = bool(enabled)
+        if bool(channel.get("_ForceLocalFullscreenSafe")) == enabled:
+            return False
+        position = self.current_position()
+        channel["_ForceLocalFullscreenSafe"] = enabled
+        channel["_StartPosition"] = max(0.0, position - 0.8) if position > 0 else 0.0
+        self.mpv_widget.status_changed.emit(
+            "正在切换本地全屏安全渲染..." if enabled else "正在恢复本地窗口渲染..."
+        )
+        self.mpv_widget.play_channel(channel, _reload=True)
+        return True
 
     def _set_triggers_enabled(self, enabled):
         self._triggers_enabled = enabled

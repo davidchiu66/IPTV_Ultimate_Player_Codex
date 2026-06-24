@@ -26,6 +26,7 @@ class PlaylistOverlay(BaseOverlay):
     edit_album_requested = Signal(str)
     refresh_album_requested = Signal(str)
     item_selected = Signal(str, str, str)
+    memory_play_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent, side="right", width=380)
@@ -153,15 +154,20 @@ class PlaylistOverlay(BaseOverlay):
         action_row.addWidget(self.delete_button)
         root.addLayout(action_row)
 
+        bottom_row = QHBoxLayout()
         self.cancel_button = QPushButton("取消")
+        self.memory_button = QPushButton("从记忆点开始播放")
         self.cancel_button.clicked.connect(self.hide_with_animation)
-        root.addWidget(self.cancel_button)
+        bottom_row.addWidget(self.cancel_button, 1)
+        bottom_row.addWidget(self.memory_button, 1)
+        root.addLayout(bottom_row)
 
         self.album_combo.currentIndexChanged.connect(self._on_album_combo_changed)
         self.new_button.clicked.connect(self.create_album_requested.emit)
         self.settings_button.clicked.connect(self._emit_edit_album)
         self.refresh_button.clicked.connect(self._emit_refresh_album)
         self.delete_button.clicked.connect(self._emit_delete_album)
+        self.memory_button.clicked.connect(self._emit_memory_play)
         self.item_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.item_list.viewport().installEventFilter(self)
 
@@ -244,6 +250,11 @@ class PlaylistOverlay(BaseOverlay):
             message_dialogs.information(self, "播放列表", "默认专辑不能删除。")
             return
         self.delete_album_requested.emit(album_id)
+
+    def _emit_memory_play(self) -> None:
+        album_id = self.active_album_id()
+        if album_id:
+            self.memory_play_requested.emit(album_id)
 
     def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
         media = item.data(Qt.UserRole)

@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import os
-
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from ui.dialog_style import apply_light_dialog_style
+from utils.app_version import get_app_version
 from utils.app_paths import resource_path
 
 
 APP_NAME = "IPTV Ultimate Player"
 APP_DISPLAY_NAME = "IPTV 播放器"
-APP_VERSION = os.environ.get("APP_VERSION", "0.0.0")
 GITHUB_URL = "https://github.com/davidchiu66/IPTV_Ultimate_Player_Codex"
 RELEASES_URL = f"{GITHUB_URL}/releases"
 APP_ICON_PATH = "docs/assets/icons/iptv-icon-02-signal-orbit-256.png"
@@ -57,7 +55,7 @@ class AboutDialog(QDialog):
         name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         title_col.addWidget(name_label)
 
-        version_label = QLabel(f"{APP_DISPLAY_NAME} · 版本 {APP_VERSION}", self)
+        version_label = QLabel(f"{APP_DISPLAY_NAME} · 版本 {get_app_version()}", self)
         version_label.setObjectName("aboutVersion")
         version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         title_col.addWidget(version_label)

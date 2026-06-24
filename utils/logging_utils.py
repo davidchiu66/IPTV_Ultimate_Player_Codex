@@ -11,6 +11,7 @@ from utils.app_paths import APP_STORAGE_DIRNAME, user_data_dir
 
 
 APP_LOG_FILENAME = "app.log"
+MPV_RUNTIME_LOG_FILENAME = "mpv_runtime.log"
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_CHECK_INTERVAL_BYTES = 64 * 1024
 
@@ -36,6 +37,11 @@ def log_dir() -> Path:
 def app_log_path() -> Path:
     """Return the single application log file path."""
     return log_dir() / APP_LOG_FILENAME
+
+
+def mpv_runtime_log_path() -> Path:
+    """Return the dedicated libmpv runtime log file path."""
+    return log_dir() / MPV_RUNTIME_LOG_FILENAME
 
 
 def log_max_bytes(default: int = DEFAULT_LOG_MAX_BYTES) -> int:

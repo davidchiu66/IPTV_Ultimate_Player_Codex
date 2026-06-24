@@ -42,6 +42,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
 
         self.recursive_check = QCheckBox("包含子文件夹")
         self.auto_play_check = QCheckBox("自动连播")
+        self.remember_playback_check = QCheckBox("播放记忆")
         self.skip_intro_check = QCheckBox("跳过片头")
         self.intro_spin = QSpinBox()
         self.intro_spin.setRange(0, 3600)
@@ -55,6 +56,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
         form.addRow("来源文件夹", dir_row)
         form.addRow("", self.recursive_check)
         form.addRow("", self.auto_play_check)
+        form.addRow("", self.remember_playback_check)
         form.addRow("", self.skip_intro_check)
         form.addRow("片头时长", self.intro_spin)
         form.addRow("", self.skip_outro_check)
@@ -75,6 +77,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
         self.dir_input.setText(self.album.get("source_dir") or "")
         self.recursive_check.setChecked(bool(self.album.get("recursive")))
         self.auto_play_check.setChecked(bool(settings.get("auto_play_next", True)))
+        self.remember_playback_check.setChecked(bool(settings.get("remember_playback")))
         self.skip_intro_check.setChecked(bool(settings.get("skip_intro")))
         self.intro_spin.setValue(max(0, int(settings.get("intro_seconds") or 0)))
         self.skip_outro_check.setChecked(bool(settings.get("skip_outro")))
@@ -98,6 +101,7 @@ class PlaylistAlbumSettingsDialog(QDialog):
             "recursive": self.recursive_check.isChecked(),
             "settings": {
                 "auto_play_next": self.auto_play_check.isChecked(),
+                "remember_playback": self.remember_playback_check.isChecked(),
                 "skip_intro": self.skip_intro_check.isChecked(),
                 "intro_seconds": int(self.intro_spin.value()),
                 "skip_outro": self.skip_outro_check.isChecked(),
