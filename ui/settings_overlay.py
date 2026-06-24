@@ -7,13 +7,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from ui.base_overlay import BaseOverlay
 from ui.theme import overlay_qss
-from utils.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, tr
+from utils.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
+
+
+LANGUAGE_LABELS = {
+    "zh_CN": "中文",
+    "en_US": "English",
+}
 
 
 class SettingsOverlay(BaseOverlay):
@@ -27,6 +36,7 @@ class SettingsOverlay(BaseOverlay):
         self.setStyleSheet(overlay_qss("settingsOverlay"))
 
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
@@ -34,14 +44,46 @@ class SettingsOverlay(BaseOverlay):
         title.setObjectName("panelTitle")
         root.addWidget(title)
 
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("settingsScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll_area.viewport().setAutoFillBackground(False)
+        scroll_area.setStyleSheet(
+            """
+            QScrollArea#settingsScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea#settingsScrollArea > QWidget {
+                background: transparent;
+            }
+            QWidget#settingsScrollContent {
+                background: transparent;
+            }
+            """
+        )
+        scroll_content = QWidget()
+        scroll_content.setObjectName("settingsScrollContent")
+        scroll_content.setAttribute(Qt.WA_StyledBackground)
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(12)
+        scroll_area.setWidget(scroll_content)
+
         hint = QLabel("代理优先级：系统代理 > 用户代理 > 频道代理 > 直连")
         hint.setObjectName("hintLabel")
         hint.setWordWrap(True)
-        root.addWidget(hint)
+        scroll_layout.addWidget(hint)
 
         form = QFormLayout()
+        self._form_layout = form
         form.setLabelAlignment(Qt.AlignLeft)
         form.setFormAlignment(Qt.AlignTop)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(12)
 
@@ -71,7 +113,7 @@ class SettingsOverlay(BaseOverlay):
 
         self.language_combo = QComboBox()
         for language in SUPPORTED_LANGUAGES:
-            self.language_combo.addItem(tr(f"app.language.{language}", language), language)
+            self.language_combo.addItem(LANGUAGE_LABELS.get(language, language), language)
 
         self.diagnostics_enabled_check = QCheckBox("启用诊断日志")
         self.diagnostics_level_combo = QComboBox()
@@ -94,10 +136,12 @@ class SettingsOverlay(BaseOverlay):
         form.addRow("启动兼容", self.safe_mode_check)
         form.addRow("诊断日志", self.diagnostics_enabled_check)
         form.addRow("日志级别", self.diagnostics_level_combo)
-        root.addLayout(form)
-        root.addStretch(1)
+        scroll_layout.addLayout(form)
+        scroll_layout.addStretch(1)
+        root.addWidget(scroll_area, 1)
 
         actions = QHBoxLayout()
+        self._actions_layout = actions
         actions.setSpacing(10)
         self.save_button = QPushButton("保存")
         self.cancel_button = QPushButton("取消")
@@ -108,6 +152,18 @@ class SettingsOverlay(BaseOverlay):
 
         self.save_button.clicked.connect(self._on_save_clicked)
         self.cancel_button.clicked.connect(self.hide_with_animation)
+
+    def _apply_adaptive_layout(self):
+        """Compact spacing on high-DPI small logical screens."""
+        compact = self._is_compact_viewport()
+        margin = 12 if compact else 18
+        spacing = 10 if compact else 14
+        form_spacing = 8 if compact else 12
+        self._root_layout.setContentsMargins(margin, margin, margin, margin)
+        self._root_layout.setSpacing(spacing)
+        self._form_layout.setHorizontalSpacing(form_spacing)
+        self._form_layout.setVerticalSpacing(form_spacing)
+        self._actions_layout.setSpacing(8 if compact else 10)
 
     def set_values(
         self,
@@ -140,7 +196,8 @@ class SettingsOverlay(BaseOverlay):
         self.local_playback_mode_combo.setCurrentIndex(local_index if local_index >= 0 else 0)
         live_index = self.live_playback_mode_combo.findData(live_playback_mode or "smooth")
         self.live_playback_mode_combo.setCurrentIndex(live_index if live_index >= 0 else 0)
-        language_index = self.language_combo.findData(language or DEFAULT_LANGUAGE)
+        selected_language = language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
+        language_index = self.language_combo.findData(selected_language)
         self.language_combo.setCurrentIndex(language_index if language_index >= 0 else 0)
         self.diagnostics_enabled_check.setChecked(bool(diagnostics_enabled))
         index = self.diagnostics_level_combo.findData(diagnostics_level or "error")

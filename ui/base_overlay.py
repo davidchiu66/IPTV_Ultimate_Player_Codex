@@ -4,11 +4,17 @@ from PySide6.QtGui import QCursor
 
 
 class BaseOverlay(QFrame):
+    EDGE_MARGIN = 10
+    COMPACT_EDGE_MARGIN = 6
+    MIN_OVERLAY_WIDTH = 300
+    MAX_WIDTH_RATIO = 0.58
+    COMPACT_HEIGHT_THRESHOLD = 720
     """覆盖层基类"""
 
     def __init__(self, parent=None, side='left', width=350):
         super().__init__(parent)
         self.side = side
+        self.base_overlay_width = width
         self.overlay_width = width
         self.setWindowFlags(Qt.Widget)
         self.setAttribute(Qt.WA_StyledBackground)
@@ -34,6 +40,29 @@ class BaseOverlay(QFrame):
         self.animation = None
 
         self.hide()
+
+    def _is_compact_viewport(self):
+        """Return whether the parent viewport needs compact overlay spacing."""
+        parent = self.parent()
+        return bool(parent and parent.height() <= self.COMPACT_HEIGHT_THRESHOLD)
+
+    def _edge_margin(self):
+        """Return current slide-in edge margin."""
+        return self.COMPACT_EDGE_MARGIN if self._is_compact_viewport() else self.EDGE_MARGIN
+
+    def _adaptive_overlay_width(self):
+        """Return an overlay width that fits the current logical viewport."""
+        parent = self.parent()
+        if not parent:
+            return self.base_overlay_width
+        margin = self._edge_margin()
+        available_width = max(self.MIN_OVERLAY_WIDTH, parent.width() - margin * 2)
+        ratio_width = max(self.MIN_OVERLAY_WIDTH, int(parent.width() * self.MAX_WIDTH_RATIO))
+        return min(self.base_overlay_width, available_width, ratio_width)
+
+    def _apply_adaptive_layout(self):
+        """Allow subclasses to compact internal layout before showing."""
+        return
 
     def eventFilter(self, obj, event):
         """覆盖层上有交互（移动/点击/按键/滚轮）时暂停滑出定时器。"""
@@ -75,18 +104,22 @@ class BaseOverlay(QFrame):
 
         parent_height = self.parent().height()
         parent_width = self.parent().width()
+        self.overlay_width = self._adaptive_overlay_width()
+        margin = self._edge_margin()
+        overlay_height = max(1, parent_height - margin * 2)
+        self._apply_adaptive_layout()
 
         if self.side == 'left':
             start_x = -self.overlay_width
-            end_x = 10  # 留10px边距
+            end_x = margin
         elif self.side == 'right':
             start_x = parent_width
-            end_x = parent_width - self.overlay_width - 10
+            end_x = parent_width - self.overlay_width - margin
         else:  # top
             start_x = 0
             end_x = 0
 
-        self.setGeometry(start_x, 10, self.overlay_width, parent_height - 20)
+        self.setGeometry(start_x, margin, self.overlay_width, overlay_height)
         self.show()
         self.raise_()
         main_window = self._find_main_window()
@@ -97,8 +130,8 @@ class BaseOverlay(QFrame):
         self.animation = QPropertyAnimation(self, b"geometry")
         self.animation.setDuration(300)
         self.animation.setEasingCurve(QEasingCurve.OutCubic)
-        self.animation.setStartValue(QRect(start_x, 10, self.overlay_width, parent_height - 20))
-        self.animation.setEndValue(QRect(end_x, 10, self.overlay_width, parent_height - 20))
+        self.animation.setStartValue(QRect(start_x, margin, self.overlay_width, overlay_height))
+        self.animation.setEndValue(QRect(end_x, margin, self.overlay_width, overlay_height))
         self.animation.start()
 
         self.reset_hide_timer()
@@ -111,6 +144,8 @@ class BaseOverlay(QFrame):
         parent_height = self.parent().height()
         parent_width = self.parent().width()
         current_x = self.x()
+        margin = self._edge_margin()
+        overlay_height = max(1, parent_height - margin * 2)
 
         if self.side == 'left':
             end_x = -self.overlay_width
@@ -123,8 +158,8 @@ class BaseOverlay(QFrame):
         self.animation = QPropertyAnimation(self, b"geometry")
         self.animation.setDuration(300)
         self.animation.setEasingCurve(QEasingCurve.InCubic)
-        self.animation.setStartValue(QRect(current_x, 10, self.overlay_width, parent_height - 20))
-        self.animation.setEndValue(QRect(end_x, 10, self.overlay_width, parent_height - 20))
+        self.animation.setStartValue(QRect(current_x, margin, self.overlay_width, overlay_height))
+        self.animation.setEndValue(QRect(end_x, margin, self.overlay_width, overlay_height))
         self.animation.finished.connect(self.hide)
         self.animation.finished.connect(self._on_hide_finished)
         self.animation.start()

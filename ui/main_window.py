@@ -7,7 +7,7 @@ import time
 import webbrowser
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -97,6 +97,9 @@ DEFAULT_BROWSER_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
+DEFAULT_STARTUP_SIZE = QSize(1620, 980)
+MIN_STARTUP_SIZE = QSize(960, 620)
+STARTUP_SCREEN_RATIO = 0.90
 
 
 def _url_origin(url):
@@ -246,7 +249,7 @@ class MainWindow(QMainWindow):
         self.epg_download_error_signal.connect(self._on_epg_download_error)
         self.resource_scan_finished_signal.connect(self._on_resource_scan_finished)
 
-        self.resize(1620, 980)
+        self.resize(self._safe_startup_size())
         self._build_ui()
         self._apply_styles()
         self._refresh_favorites_views()
@@ -262,10 +265,32 @@ class MainWindow(QMainWindow):
         screen = self.screen() or QGuiApplication.primaryScreen()
         if not screen:
             return
+        safe_size = self._safe_startup_size(screen)
+        if self.width() > safe_size.width() or self.height() > safe_size.height():
+            self.resize(
+                min(self.width(), safe_size.width()),
+                min(self.height(), safe_size.height()),
+            )
         available = screen.availableGeometry()
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
+
+    def _safe_startup_size(self, screen=None) -> QSize:
+        """Return a startup size that keeps title-bar controls inside the screen."""
+        screen = screen or self.screen() or QGuiApplication.primaryScreen()
+        if not screen:
+            return QSize(DEFAULT_STARTUP_SIZE)
+
+        available = screen.availableGeometry()
+        max_width = max(1, int(available.width() * STARTUP_SCREEN_RATIO))
+        max_height = max(1, int(available.height() * STARTUP_SCREEN_RATIO))
+
+        min_width = min(MIN_STARTUP_SIZE.width(), max_width)
+        min_height = min(MIN_STARTUP_SIZE.height(), max_height)
+        width = max(min_width, min(DEFAULT_STARTUP_SIZE.width(), max_width))
+        height = max(min_height, min(DEFAULT_STARTUP_SIZE.height(), max_height))
+        return QSize(width, height)
 
     def _build_ui(self):
         self.setStatusBar(QStatusBar())

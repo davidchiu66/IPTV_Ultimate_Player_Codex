@@ -228,6 +228,15 @@ class GlassTitleBar(QFrame):
         close_button.clicked.connect(window.close)
         layout.addWidget(close_button)
 
+    def _is_window_button_at(self, pos: QPoint) -> bool:
+        """Return whether a title-bar position belongs to a window control button."""
+        child = self.childAt(pos)
+        while child is not None:
+            if isinstance(child, _WindowGlyphButton):
+                return True
+            child = child.parentWidget()
+        return False
+
     def set_title(self, title: str) -> None:
         """Update displayed window title."""
         self.title_label.setText(title)
@@ -247,6 +256,9 @@ class GlassTitleBar(QFrame):
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         """Maximize/restore main windows on title-bar double click."""
+        if self._is_window_button_at(event.position().toPoint()):
+            super().mouseDoubleClickEvent(event)
+            return
         if event.button() == Qt.LeftButton and self._maximize_button is not None:
             self._toggle_maximized()
             event.accept()
@@ -255,6 +267,9 @@ class GlassTitleBar(QFrame):
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         """Start dragging the frameless parent window."""
+        if self._is_window_button_at(event.position().toPoint()):
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.LeftButton:
             global_pos = event.globalPosition().toPoint()
             self._drag_pos = global_pos - self._window.frameGeometry().topLeft()
@@ -344,6 +359,7 @@ def install_custom_window_chrome(
         return None
     existing = getattr(widget, "_glass_custom_title_bar", None)
     if existing is not None:
+        widget._glass_custom_chrome_resizable = bool(resizable)
         existing.set_title(widget.windowTitle())
         return existing
 
@@ -357,6 +373,7 @@ def install_custom_window_chrome(
     widget.installEventFilter(event_filter)
     widget._glass_custom_title_bar = title_bar
     widget._glass_custom_chrome_filter = event_filter
+    widget._glass_custom_chrome_resizable = bool(resizable)
     widget._glass_size_grip = grip
     event_filter.sync()
     return title_bar
@@ -372,6 +389,8 @@ def handle_frameless_native_event(
     """Provide invisible resize borders for frameless Windows top-level widgets."""
     if getattr(widget, "_glass_custom_title_bar", None) is None:
         return False, 0
+    if not getattr(widget, "_glass_custom_chrome_resizable", True):
+        return False, 0
     if sys.platform != "win32" or widget.isFullScreen() or widget.isMaximized():
         return False, 0
     try:
@@ -383,11 +402,14 @@ def handle_frameless_native_event(
 
     x = ctypes.c_short(msg.lParam & 0xFFFF).value
     y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-    frame = widget.frameGeometry()
-    left = x <= frame.left() + border_width
-    right = x >= frame.right() - border_width
-    top = y <= frame.top() + border_width
-    bottom = y >= frame.bottom() - border_width
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(rect)):
+        return False, 0
+
+    left = x <= rect.left + border_width
+    right = x >= rect.right - border_width
+    top = y <= rect.top + border_width
+    bottom = y >= rect.bottom - border_width
 
     if top and left:
         return True, _HTTOPLEFT

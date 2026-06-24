@@ -145,6 +145,7 @@ class NavigationOverlay(BaseOverlay):
         """)
 
         layout = QVBoxLayout(self)
+        self._root_layout = layout
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
@@ -190,48 +191,51 @@ class NavigationOverlay(BaseOverlay):
         return super().eventFilter(watched, event)
 
     def _button_style(self) -> str:
-        return """
-            QPushButton {
+        padding = 5 if self._is_compact_viewport() else 8
+        font_size = 12 if self._is_compact_viewport() else 13
+        return f"""
+            QPushButton {{
                 background: rgba(255, 255, 255, 24);
                 color: #f4f8ff;
                 border: 1px solid rgba(120, 180, 255, 105);
                 border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
+                padding: {padding}px;
+                font-size: {font_size}px;
+            }}
+            QPushButton:hover {{
                 background: rgba(120, 180, 255, 55);
                 border: 1px solid rgba(120, 180, 255, 160);
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:disabled {{
                 background: rgba(255, 255, 255, 10);
                 color: rgba(220, 230, 245, 95);
                 border: 1px solid rgba(120, 180, 255, 45);
-            }
+            }}
         """
 
     def _list_style(self) -> str:
-        return """
-            QListWidget {
+        padding = 4 if self._is_compact_viewport() else 6
+        return f"""
+            QListWidget {{
                 background: rgba(13, 18, 26, 190);
                 color: #edf4ff;
                 border: 1px solid rgba(120, 180, 255, 70);
                 border-radius: 8px;
                 outline: 0;
-            }
-            QListWidget::item {
-                padding: 6px 8px;
+            }}
+            QListWidget::item {{
+                padding: {padding}px 8px;
                 border-bottom: 1px solid rgba(255, 255, 255, 18);
-            }
-            QListWidget::item:selected {
+            }}
+            QListWidget::item:selected {{
                 background: rgba(105, 178, 255, 115);
                 color: #ffffff;
                 border-radius: 5px;
-            }
-            QListWidget::item:hover {
+            }}
+            QListWidget::item:hover {{
                 background: rgba(120, 180, 255, 40);
                 border-radius: 5px;
-            }
+            }}
         """
 
     def _configure_list_widget(self, widget: QListWidget) -> None:
@@ -241,9 +245,57 @@ class NavigationOverlay(BaseOverlay):
         widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         widget.setUniformItemSizes(True)
 
+    def _apply_adaptive_layout(self) -> None:
+        """Compact the resource overlay on high-DPI small logical screens."""
+        compact = self._is_compact_viewport()
+        root_margin = 12 if compact else 18
+        root_spacing = 8 if compact else 12
+        page_margin = 8 if compact else 12
+        page_spacing = 6 if compact else 10
+        list_min_height = 110 if compact else 150
+
+        self._root_layout.setContentsMargins(root_margin, root_margin, root_margin, root_margin)
+        self._root_layout.setSpacing(root_spacing)
+        for layout in (
+            getattr(self, "_directory_layout", None),
+            getattr(self, "_resource_favorites_layout", None),
+            getattr(self, "_channel_favorites_layout", None),
+        ):
+            if layout is not None:
+                layout.setContentsMargins(page_margin, page_margin, page_margin, page_margin)
+                layout.setSpacing(page_spacing)
+
+        button_style = self._button_style()
+        for button in (
+            getattr(self, "btn_open", None),
+            getattr(self, "btn_open_url", None),
+            getattr(self, "btn_refresh", None),
+            getattr(self, "btn_delete", None),
+            getattr(self, "btn_use_resource_favorite", None),
+            getattr(self, "btn_remove_resource_favorite", None),
+            getattr(self, "btn_refresh_resource_favorites", None),
+            getattr(self, "btn_play_channel_favorite", None),
+            getattr(self, "btn_remove_channel_favorite", None),
+            getattr(self, "btn_refresh_channel_favorites", None),
+            getattr(self, "cancel_button", None),
+        ):
+            if button is not None:
+                button.setStyleSheet(button_style)
+
+        list_style = self._list_style()
+        for widget in (
+            getattr(self, "file_list", None),
+            getattr(self, "resource_favorite_list", None),
+            getattr(self, "channel_favorite_list", None),
+        ):
+            if widget is not None:
+                widget.setStyleSheet(list_style)
+                widget.setMinimumHeight(list_min_height)
+
     def _build_directory_tab(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self._directory_layout = layout
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
@@ -316,6 +368,7 @@ class NavigationOverlay(BaseOverlay):
     def _build_resource_favorites_tab(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self._resource_favorites_layout = layout
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
@@ -383,6 +436,7 @@ class NavigationOverlay(BaseOverlay):
     def _build_channel_favorites_tab(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self._channel_favorites_layout = layout
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
