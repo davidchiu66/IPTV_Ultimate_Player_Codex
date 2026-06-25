@@ -1,0 +1,179 @@
+name: Build Windows Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish portable package to GitHub Release"
+        required: false
+        default: false
+        type: boolean
+      version:
+        description: "Version for manual release, for example 0.1.0 or v0.1.0"
+        required: false
+        type: string
+      release_notes_path:
+        description: "Release notes markdown path. Defaults to docs/release_notes_<version>.md"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-portable:
+    name: Build Windows portable package
+    runs-on: windows-latest
+
+    env:
+      APP_NAME: IPTVPlayer
+      DISPLAY_NAME: IPTV Ultimate Player
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            $version = $tag.TrimStart("v")
+            $publishRelease = "true"
+          } else {
+            $manualVersion = "${{ inputs.version }}"
+            if ([string]::IsNullOrWhiteSpace($manualVersion)) {
+              $version = "0.0.${{ github.run_number }}"
+            } else {
+              $version = $manualVersion.Trim().TrimStart("v")
+            }
+            $tag = "v$version"
+            $publishRelease = "${{ inputs.publish_release }}"
+            if ([string]::IsNullOrWhiteSpace($publishRelease)) {
+              $publishRelease = "false"
+            }
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PUBLISH_RELEASE=$publishRelease" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "app_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "release_tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "publish_release=$publishRelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "APP_VERSION=$version"
+          Write-Host "RELEASE_TAG=$tag"
+          Write-Host "PUBLISH_RELEASE=$publishRelease"
+
+      - name: Write app version resource
+        shell: pwsh
+        run: |
+          Set-Content -Path app_version.txt -Value $env:APP_VERSION -Encoding UTF8
+
+      - name: Resolve release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $manualPath = "${{ inputs.release_notes_path }}"
+          if ([string]::IsNullOrWhiteSpace($manualPath)) {
+            $releaseNotesPath = "docs/release_notes_$env:APP_VERSION.md"
+          } else {
+            $releaseNotesPath = $manualPath.Trim()
+          }
+          "RELEASE_NOTES_PATH=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "release_notes_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "RELEASE_NOTES_PATH=$releaseNotesPath"
+
+      - name: Validate release notes
+        if: steps.version.outputs.publish_release == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "$env:RELEASE_NOTES_PATH")) {
+            Write-Error "Release notes file not found: $env:RELEASE_NOTES_PATH. Add docs/release_notes_$env:APP_VERSION.md or provide release_notes_path."
+          }
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build application with PyInstaller
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --name "$env:APP_NAME" `
+            --icon "docs/assets/icons/app.ico" `
+            --collect-all PySide6 `
+            --hidden-import PySide6.QtWebEngineCore `
+            --hidden-import PySide6.QtWebEngineWidgets `
+            --hidden-import PySide6.QtWebEngineQuick `
+            --add-data "app_version.txt;." `
+            --add-data "frontend;frontend" `
+            --add-data "i18n;i18n" `
+            --add-data "docs/assets;docs/assets" `
+            --add-data "plugins;plugins" `
+            --add-data "widevine;widevine" `
+            main.py
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          $portableDir = Join-Path $PWD "portable"
+          $packageName = "$env:APP_NAME-Portable-$env:APP_VERSION"
+          $packageRoot = Join-Path $portableDir $packageName
+          $zipPath = Join-Path $portableDir "$packageName.zip"
+
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          Copy-Item -Path "dist\$env:APP_NAME\*" -Destination $packageRoot -Recurse -Force
+          Copy-Item -Path "LICENSE" -Destination $packageRoot -Force
+          Copy-Item -Path "README.md" -Destination $packageRoot -Force
+          Copy-Item -Path "readme_en.md" -Destination $packageRoot -Force
+          New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "docs") | Out-Null
+          Copy-Item -Path "docs\ABOUT.md" -Destination (Join-Path $packageRoot "docs") -Force
+
+          @"
+          IPTV Ultimate Player Portable
+          Version: $env:APP_VERSION
+
+          This portable package can be extracted and run directly.
+          Launch: $env:APP_NAME.exe
+
+          Runtime data such as config, logs and caches are stored under the current user's AppData/Local profile.
+          "@ | Set-Content -Path (Join-Path $packageRoot "README_PORTABLE.txt") -Encoding UTF8
+
+          Compress-Archive -Path $packageRoot -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          Write-Host "Portable package: $zipPath"
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTVPlayer-Windows-Portable-${{ env.APP_VERSION }}
+          path: portable/*.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: steps.version.outputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.release_tag }}
+          name: IPTV Ultimate Player ${{ steps.version.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: ${{ steps.release_notes.outputs.release_notes_path }}
+          fail_on_unmatched_files: true
+          files: portable/*.zip
