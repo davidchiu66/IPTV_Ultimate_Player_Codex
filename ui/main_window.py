@@ -1306,6 +1306,24 @@ class MainWindow(QMainWindow):
         """Return whether an application event belongs to this window."""
         if isinstance(watched, QWidget):
             return watched.window() is self
+        if self.isActiveWindow():
+            return True
+        active_widget = QApplication.activeWindow()
+        if active_widget is self:
+            return True
+        if isinstance(active_widget, QWidget) and active_widget.window() is self:
+            return True
+        focus_window = QGuiApplication.focusWindow()
+        window_handle = self.windowHandle()
+        if focus_window is not None and window_handle is not None:
+            current = focus_window
+            while current is not None:
+                if current is window_handle:
+                    return True
+                try:
+                    current = current.parent()
+                except Exception:
+                    break
         return False
 
     def _side_overlay_visible(self) -> bool:
@@ -1347,6 +1365,9 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         """Track fullscreen input activity so the cursor can auto-hide."""
+        if event.type() == QEvent.KeyPress and self._event_belongs_to_main_window(watched):
+            if self._handle_player_key_shortcut(event, watched):
+                return True
         if self.isFullScreen() and self._event_belongs_to_main_window(watched):
             if event.type() in (
                 QEvent.MouseMove,
@@ -1358,6 +1379,73 @@ class MainWindow(QMainWindow):
                 self._restore_fullscreen_cursor()
                 self._schedule_fullscreen_cursor_hide()
         return super().eventFilter(watched, event)
+
+    def _player_shortcut_focus_blocked(self, focus_widget=None) -> bool:
+        """Return whether the focused widget should keep Space/Enter for itself."""
+        widget = focus_widget or QApplication.focusWidget()
+        while widget is not None:
+            if widget is self:
+                return False
+            if widget.inherits("QLineEdit"):
+                return True
+            if widget.inherits("QTextEdit") or widget.inherits("QPlainTextEdit"):
+                return True
+            if widget.inherits("QAbstractSpinBox") or widget.inherits("QComboBox"):
+                return True
+            if widget.inherits("QAbstractItemView") or widget.inherits("QAbstractButton"):
+                return True
+            if widget.inherits("QAbstractSlider") or widget.inherits("QTabBar"):
+                return True
+            widget = widget.parentWidget()
+        return False
+
+    def _player_shortcuts_available(self, watched=None) -> bool:
+        """Return whether player-level keyboard shortcuts may handle this key."""
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if QApplication.activePopupWidget() is not None:
+            return False
+        if watched is not None and not self._event_belongs_to_main_window(watched):
+            return False
+        return not self._player_shortcut_focus_blocked()
+
+    def _toggle_playback_from_shortcut(self) -> bool:
+        """Toggle playback pause state from a keyboard shortcut."""
+        mpv_widget = getattr(getattr(self, "player_panel", None), "mpv_widget", None)
+        if mpv_widget is None or getattr(mpv_widget, "player", None) is None:
+            return False
+        if not getattr(self.player_panel, "_playback_active", False):
+            return False
+        mpv_widget.toggle_pause()
+        return True
+
+    def _handle_player_key_shortcut(self, event, watched=None) -> bool:
+        """Handle player keyboard shortcuts without stealing text input keys."""
+        if event is None or event.type() != QEvent.KeyPress:
+            return False
+        if event.isAutoRepeat():
+            return False
+        blocked_modifiers = Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier
+        if event.modifiers() & blocked_modifiers:
+            return False
+
+        key = event.key()
+        if key == Qt.Key_Space:
+            if not self._player_shortcuts_available(watched):
+                return False
+            if self._toggle_playback_from_shortcut():
+                event.accept()
+                return True
+            return False
+
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            if not self._player_shortcuts_available(watched):
+                return False
+            self._toggle_fullscreen()
+            event.accept()
+            return True
+
+        return False
 
     def _reposition_visible_overlays(self):
         """窗口尺寸变化后，重新对齐时钟及当前可见的覆盖层。
@@ -1389,7 +1477,9 @@ class MainWindow(QMainWindow):
                 ov.raise_()
 
     def keyPressEvent(self, event):
-        """快捷键处理：Esc 退出全屏，F1/F11 切换全屏"""
+        """Handle player keyboard shortcuts and fullscreen shortcuts."""
+        if self._handle_player_key_shortcut(event, self):
+            return
         if event.key() == Qt.Key_Escape and self.isFullScreen():
             self._log_fullscreen_state("fullscreen.escape.before", entering=False)
             self.showNormal()

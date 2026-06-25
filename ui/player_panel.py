@@ -941,6 +941,7 @@ class MpvVideoWidget(QWidget):
         self.setObjectName("mpvViewport")
         self.setAttribute(Qt.WA_NativeWindow, True)
         self.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.setStyleSheet("background-color: #000000;")
 
         self.player = None
@@ -968,6 +969,8 @@ class MpvVideoWidget(QWidget):
         self._video_stall_recovering = False
         self._last_debug_snapshot_at = 0.0
         self._last_debug_snapshot_key = ""
+        self._preferred_volume = 100.0
+        self._preferred_muted = False
 
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(500)
@@ -1566,6 +1569,7 @@ class MpvVideoWidget(QWidget):
         if stream_format != "local":
             self._apply_network_options(channel)
             self._apply_stream_options(channel, stream_format)
+        self._apply_preferred_volume_state()
         self.player["force-media-title"] = stream_name
         self.player.command_async("loadfile", stream_url, "replace")
         self._schedule_start_position_seek(channel, self._play_request_id)
@@ -2216,21 +2220,37 @@ class MpvVideoWidget(QWidget):
         return True
 
     def set_volume(self, value):
+        volume = float(max(0, min(100, value)))
+        self._preferred_volume = volume
         if self.player is None:
+            self.volume_state_changed.emit(self._preferred_volume, self._preferred_muted)
             return
         try:
-            self.player["volume"] = float(max(0, min(100, value)))
+            self.player["volume"] = volume
             self.volume_state_changed.emit(float(self.player["volume"] or 0), bool(self.player["mute"]))
         except Exception:
             pass
 
     def toggle_mute(self):
         if self.player is None:
+            self._preferred_muted = not self._preferred_muted
+            self.volume_state_changed.emit(self._preferred_volume, self._preferred_muted)
             return
         try:
             muted = not bool(self.player["mute"])
             self.player["mute"] = muted
+            self._preferred_muted = muted
             self.volume_state_changed.emit(float(self.player["volume"] or 0), muted)
+        except Exception:
+            pass
+
+    def _apply_preferred_volume_state(self):
+        """Apply the user's last volume/mute choice to a new mpv playback session."""
+        if self.player is None:
+            return
+        try:
+            self.player["volume"] = self._preferred_volume
+            self.player["mute"] = self._preferred_muted
         except Exception:
             pass
 
@@ -2956,6 +2976,7 @@ class PlayerPanel(QFrame):
         self.state_badge.setText("播放中")
         if self.mpv_widget is not None:
             self.video_stack.setCurrentWidget(self.mpv_widget)
+            self.mpv_widget.setFocus(Qt.OtherFocusReason)
         self.set_loading(False)
         self.warning_label.setVisible(False)
         self.bottom_bar.set_playing(True)
