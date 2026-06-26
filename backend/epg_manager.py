@@ -1,4 +1,5 @@
 import gzip
+import io
 import os
 import sqlite3
 import threading
@@ -13,6 +14,8 @@ from utils.app_paths import user_epg_dir
 
 
 class EPGManager:
+    GZIP_MAGIC = b"\x1f\x8b"
+
     def __init__(self, epg_dir=None):
         self.epg_dir = os.path.abspath(str(epg_dir or user_epg_dir()))
         if not os.path.exists(self.epg_dir):
@@ -370,6 +373,44 @@ class EPGManager:
             while len(self._program_cache) > self._cache_limit:
                 self._program_cache.popitem(last=False)
         return programs
+    def _prepare_downloaded_epg(self, data, *, content_type=""):
+        if not data:
+            raise ValueError("\u8282\u76ee\u5355\u5730\u5740\u6ca1\u6709\u8fd4\u56de\u5185\u5bb9\u3002")
+
+        if data.startswith(self.GZIP_MAGIC):
+            try:
+                data = gzip.decompress(data)
+            except OSError as exc:
+                raise ValueError(f"\u8282\u76ee\u5355 gzip \u89e3\u538b\u5931\u8d25\uff1a{exc}") from exc
+
+        stripped = data.lstrip()
+        probe = stripped[:256].lower()
+        if probe.startswith((b"<!doctype html", b"<html")):
+            raise ValueError(
+                "\u8282\u76ee\u5355\u5730\u5740\u8fd4\u56de\u7684\u662f\u7f51\u9875\u5185\u5bb9\uff0c\u4e0d\u662f\u6709\u6548\u7684 XMLTV \u8282\u76ee\u5355\u3002"
+                "\u53ef\u80fd\u662f\u5730\u5740\u5931\u6548\u3001\u9700\u8981\u9274\u6743\u3001\u88ab CDN \u62e6\u622a\u6216\u8fd4\u56de\u4e86\u9519\u8bef\u9875\u9762\u3002"
+            )
+
+        if not probe.startswith((b"<?xml", b"<tv")):
+            head = stripped[:80].decode("utf-8", errors="replace").replace(chr(13), " ").replace(chr(10), " ")
+            content_desc = content_type or "\u672a\u77e5"
+            raise ValueError(
+                "\u8282\u76ee\u5355\u5730\u5740\u8fd4\u56de\u7684\u5185\u5bb9\u4e0d\u662f\u6709\u6548 XMLTV \u683c\u5f0f\u3002"
+                f"\u54cd\u5e94\u7c7b\u578b\uff1a{content_desc}\uff1b\u5185\u5bb9\u5f00\u5934\uff1a{head}"
+            )
+
+        try:
+            root_tag = None
+            for _, elem in ET.iterparse(io.BytesIO(data), events=("start",)):
+                root_tag = elem.tag.lower().split("}", 1)[-1]
+                break
+            if root_tag != "tv":
+                root_desc = root_tag or "\u672a\u77e5"
+                raise ValueError(f"\u8282\u76ee\u5355\u6839\u8282\u70b9\u4e0d\u662f tv\uff0c\u800c\u662f {root_desc}\u3002")
+        except ET.ParseError as exc:
+            raise ValueError(f"\u8282\u76ee\u5355 XML \u89e3\u6790\u5931\u8d25\uff1a{exc}") from exc
+
+        return data
 
     def download_epg(self, url, auto=False, on_success=None, on_error=None):
         def task():
@@ -398,10 +439,9 @@ class EPGManager:
                 req = urllib.request.Request(url, headers={"User-Agent": "Televizo/1.3.0"})
                 with urllib.request.urlopen(req, timeout=60) as response:
                     data = response.read()
-                    content_encoding = response.info().get("Content-Encoding", "")
+                    content_type = response.info().get("Content-Type", "")
 
-                if url.endswith(".gz") or content_encoding == "gzip" or data[:2] == b"\x1f\x8b":
-                    data = gzip.decompress(data)
+                data = self._prepare_downloaded_epg(data, content_type=content_type)
 
                 with open(save_path, "w", encoding="utf-8") as f:
                     f.write(data.decode("utf-8", errors="ignore"))

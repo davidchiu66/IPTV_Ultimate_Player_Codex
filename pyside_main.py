@@ -83,7 +83,13 @@ def setup_session_logging():
 
     def qt_message_handler(mode, context, message):
         try:
-            line = f"qt: {message}\n"
+            text = str(message or "")
+            if (
+                "appleTVControlBarWindow" in text
+                and "must be a top level window" in text
+            ):
+                return
+            line = f"qt: {text}\n"
             sys.stderr.write(line)
         except Exception:
             pass

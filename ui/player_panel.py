@@ -971,6 +971,7 @@ class MpvVideoWidget(QWidget):
         self._last_debug_snapshot_key = ""
         self._preferred_volume = 100.0
         self._preferred_muted = False
+        self._preferred_speed = 1.0
 
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(500)
@@ -1240,7 +1241,7 @@ class MpvVideoWidget(QWidget):
             ("interpolation", "no"),
             ("video-sync", "audio"),
             ("framedrop", "vo"),
-            ("speed", "1.0"),
+            ("speed", str(self._preferred_speed)),
         ):
             self._set_player_property(key, value)
 
@@ -1569,9 +1570,11 @@ class MpvVideoWidget(QWidget):
         if stream_format != "local":
             self._apply_network_options(channel)
             self._apply_stream_options(channel, stream_format)
-        self._apply_preferred_volume_state()
+        self._apply_preferred_playback_state()
         self.player["force-media-title"] = stream_name
         self.player.command_async("loadfile", stream_url, "replace")
+        QTimer.singleShot(0, self._apply_preferred_playback_state)
+        QTimer.singleShot(250, self._apply_preferred_playback_state)
         self._schedule_start_position_seek(channel, self._play_request_id)
         action_text = "正在打开" if stream_format == "local" else "正在连接"
         policy_name = policy.get("name", stream_format)
@@ -1579,7 +1582,7 @@ class MpvVideoWidget(QWidget):
         if not self.progress_timer.isActive():
             self.progress_timer.start()
         self.pause_changed.emit(bool(self.player["pause"]))
-        self.volume_state_changed.emit(float(self.player["volume"] or 100), bool(self.player["mute"]))
+        self.volume_state_changed.emit(float(self.player["volume"] or self._preferred_volume), bool(self.player["mute"]))
         self._begin_startup_watchers(channel)
 
     def _schedule_start_position_seek(self, channel, request_id):
@@ -2244,28 +2247,39 @@ class MpvVideoWidget(QWidget):
         except Exception:
             pass
 
-    def _apply_preferred_volume_state(self):
-        """Apply the user's last volume/mute choice to a new mpv playback session."""
+    def _apply_preferred_playback_state(self):
+        """Apply the user's last volume, mute and speed choices to current playback."""
         if self.player is None:
             return
         try:
             self.player["volume"] = self._preferred_volume
             self.player["mute"] = self._preferred_muted
+            self.player["speed"] = self._preferred_speed
+            self.volume_state_changed.emit(
+                float(self.player["volume"] or self._preferred_volume),
+                bool(self.player["mute"]),
+            )
         except Exception:
             pass
 
+    def _apply_preferred_volume_state(self):
+        """Backward-compatible wrapper for volume preference application."""
+        self._apply_preferred_playback_state()
+
     def set_playback_speed(self, speed):
-        if self.player is None:
-            return
         try:
             speed_value = float(speed)
         except (TypeError, ValueError):
             speed_value = 1.0
         speed_value = max(0.25, min(4.0, speed_value))
+        self._preferred_speed = speed_value
+        label = f"{int(speed_value)}x" if float(speed_value).is_integer() else f"{speed_value:g}x"
+        if self.player is None:
+            self.status_changed.emit(f"\u64ad\u653e\u500d\u7387\uff1a{label}")
+            return
         try:
             self.player["speed"] = speed_value
-            label = f"{int(speed_value)}x" if float(speed_value).is_integer() else f"{speed_value:g}x"
-            self.status_changed.emit(f"播放倍率：{label}")
+            self.status_changed.emit(f"\u64ad\u653e\u500d\u7387\uff1a{label}")
         except Exception:
             pass
 
@@ -2757,6 +2771,7 @@ class PlayerPanel(QFrame):
         mw.duration_changed.connect(self._on_duration_changed)
         mw.tracks_changed.connect(self.top_bar.populate_tracks)
         mw.pause_changed.connect(lambda paused: self.bottom_bar.set_playing(not paused))
+        mw.volume_state_changed.connect(lambda volume, _muted: self.bottom_bar.set_volume(volume))
         mw.volume_state_changed.connect(lambda _volume, muted: self.bottom_bar.set_muted(muted))
         mw.quality_changed.connect(self.top_bar.set_current_quality)
         mw.local_media_finished.connect(self.local_media_finished.emit)
@@ -3035,7 +3050,6 @@ class PlayerPanel(QFrame):
     def play_channel(self, channel, _reload=False):
         self._set_channel_title(channel)
         self.state_badge.setText("加载中")
-        self.bottom_bar.reset_speed()
         self._ensure_mpv_widget()
         if self.mpv_widget is not None:
             initial_tracks = self.mpv_widget._extract_static_tracks(channel)
@@ -3049,7 +3063,6 @@ class PlayerPanel(QFrame):
         self.video_stack.setCurrentWidget(self.placeholder_widget)
         self.top_bar.hide()
         self.bottom_bar.hide()
-        self.bottom_bar.reset_speed()
         self._controls_visible = False
         self._controls_hide_timer.stop()
         self.state_badge.setText("待机")

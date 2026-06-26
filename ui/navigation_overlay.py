@@ -78,6 +78,7 @@ class NavigationOverlay(BaseOverlay):
         self.setObjectName("navOverlay")
         self._all_file_paths: list[str] = []
         self._resource_filter = "all"
+        self._resource_keyword = ""
         self._resource_favorite_filter = "all"
         self._resource_favorite_keyword = ""
         self._channel_favorite_keyword = ""
@@ -222,6 +223,35 @@ class NavigationOverlay(BaseOverlay):
             }}
         """
 
+    def _menu_style(self) -> str:
+        return """
+            QMenu {
+                background: rgba(18, 24, 34, 245);
+                color: #f3f7ff;
+                border: 1px solid rgba(120, 180, 255, 135);
+                border-radius: 10px;
+                padding: 6px;
+            }
+            QMenu::item {
+                min-width: 118px;
+                padding: 8px 26px 8px 16px;
+                border-radius: 6px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background: rgba(105, 178, 255, 95);
+                color: #ffffff;
+            }
+            QMenu::item:pressed {
+                background: rgba(105, 178, 255, 125);
+            }
+            QMenu::separator {
+                height: 1px;
+                background: rgba(120, 180, 255, 70);
+                margin: 5px 8px;
+            }
+        """
+
     def _list_style(self) -> str:
         padding = 4 if self._is_compact_viewport() else 6
         return f"""
@@ -348,10 +378,7 @@ class NavigationOverlay(BaseOverlay):
 
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(0, 0, 0, 0)
-        filter_row.setSpacing(8)
-        filter_row2 = QHBoxLayout()
-        filter_row2.setContentsMargins(0, 0, 0, 0)
-        filter_row2.setSpacing(8)
+        filter_row.setSpacing(6)
         self.filter_group = QButtonGroup(self)
         self.filter_all = QRadioButton("全部")
         self.filter_channels = QRadioButton("频道")
@@ -360,7 +387,7 @@ class NavigationOverlay(BaseOverlay):
         self.filter_gifs = QRadioButton("GIF")
         self.filter_images = QRadioButton("图片")
         self.filter_all.setChecked(True)
-        for index, (key, radio) in enumerate((
+        for _index, (key, radio) in enumerate((
             ("all", self.filter_all),
             ("channel_resource", self.filter_channels),
             ("video", self.filter_videos),
@@ -370,15 +397,18 @@ class NavigationOverlay(BaseOverlay):
         )):
             self.filter_group.addButton(radio)
             radio.toggled.connect(lambda checked, filter_key=key: self._on_filter_changed(filter_key, checked))
-            (filter_row if index < 4 else filter_row2).addWidget(radio)
+            filter_row.addWidget(radio)
         filter_row.addStretch(1)
-        filter_row2.addStretch(1)
         layout.addLayout(filter_row)
-        layout.addLayout(filter_row2)
 
         file_label = QLabel("资源文件")
         file_label.setObjectName("sectionLabel")
         layout.addWidget(file_label)
+
+        self.resource_search = QLineEdit()
+        self.resource_search.setPlaceholderText("搜索资源文件...")
+        self.resource_search.textChanged.connect(self._on_resource_search_changed)
+        layout.addWidget(self.resource_search)
 
         self.file_list = QListWidget()
         self.file_list.setStyleSheet(self._list_style())
@@ -517,6 +547,9 @@ class NavigationOverlay(BaseOverlay):
         if not path:
             return
         menu = QMenu(self)
+        menu.setObjectName("resourceContextMenu")
+        menu.setAttribute(Qt.WA_TranslucentBackground, True)
+        menu.setStyleSheet(self._menu_style())
         action_text = "取消收藏" if self._is_resource_favorite(path) else "添加到收藏"
         favorite_action = menu.addAction(action_text)
         open_action = menu.addAction("使用/播放")
@@ -593,9 +626,22 @@ class NavigationOverlay(BaseOverlay):
         self._apply_file_filter()
 
     def _filtered_paths(self) -> list[str]:
+        paths = list(self._all_file_paths)
         if self._resource_filter != "all":
-            return [path for path in self._all_file_paths if resource_type_key(path) == self._resource_filter]
-        return list(self._all_file_paths)
+            paths = [path for path in paths if resource_type_key(path) == self._resource_filter]
+        keyword = self._resource_keyword.strip().lower()
+        if keyword:
+            paths = [
+                path for path in paths
+                if keyword in os.path.basename(path).lower()
+                or keyword in path.lower()
+                or keyword in resource_label(path).lower()
+            ]
+        return paths
+
+    def _on_resource_search_changed(self, text: str) -> None:
+        self._resource_keyword = text or ""
+        self._apply_file_filter()
 
     def _on_resource_favorite_filter_changed(self, filter_key: str, checked: bool) -> None:
         if not checked:

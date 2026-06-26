@@ -74,6 +74,13 @@ ANIMATION_MS = 150
 SPEED_OPTIONS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 
 
+def _keep_widget_alien(widget: QWidget) -> None:
+    """Keep overlay controls as non-native child widgets over the mpv host."""
+    widget.setAttribute(Qt.WA_NativeWindow, False)
+    widget.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
+    widget.setAttribute(Qt.WA_PaintOnScreen, False)
+
+
 SVG_ICONS: dict[str, str] = {
     "playlist": """
         <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
@@ -177,6 +184,7 @@ class SvgIconButton(QWidget):
     def __init__(self, icon: str, diameter: int, parent: QWidget | None = None, circular: bool = False) -> None:
         """Create an SVG button."""
         super().__init__(parent)
+        _keep_widget_alien(self)
         self._icon_name = icon
         self._icon = SvgIcon(icon)
         self._hover = 0.0
@@ -346,6 +354,7 @@ class GlowSlider(QWidget):
     ) -> None:
         """Create a horizontal custom slider."""
         super().__init__(parent)
+        _keep_widget_alien(self)
         self._value = 0.0
         self._hover = 0.0
         self._dragging = False
@@ -500,6 +509,7 @@ class SpeedButton(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Create speed selector."""
         super().__init__(parent)
+        _keep_widget_alien(self)
         self._speed = 1.0
         self._hover = 0.0
         self.setFixedSize(METRICS.speed_width, METRICS.speed_height)
@@ -645,6 +655,7 @@ class AppleTVControlBar(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         """Build the control bar."""
         super().__init__(parent)
+        _keep_widget_alien(self)
         self.setObjectName("appleTVControlBar")
         self.setFixedHeight(METRICS.height)
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -661,6 +672,7 @@ class AppleTVControlBar(QFrame):
         self._duration = 0.0
         self._muted = False
         self._build_ui()
+        self._keep_children_alien()
         self.set_playing(False)
 
     def _build_ui(self) -> None:
@@ -788,6 +800,12 @@ class AppleTVControlBar(QFrame):
         bottom.addWidget(center_zone, 60)
         bottom.addWidget(right_zone, 20)
         root.addLayout(bottom)
+
+    def _keep_children_alien(self) -> None:
+        """Avoid creating QWidgetWindow handles for non-top-level overlay children."""
+        for child in self.findChildren(QWidget):
+            if not child.isWindow():
+                _keep_widget_alien(child)
 
     def set_duration_mode(self, has_duration: bool) -> None:
         """Set whether the current media has a duration."""
