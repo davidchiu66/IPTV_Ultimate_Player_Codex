@@ -28,7 +28,7 @@ LANGUAGE_LABELS = {
 class SettingsOverlay(BaseOverlay):
     """Right-side application settings panel."""
 
-    settings_saved = Signal(str, int, int, bool, str, str, str, str, bool, bool)
+    settings_saved = Signal(str, int, int, bool, str, str, str, str, bool, bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent, side="right", width=380)
@@ -111,6 +111,10 @@ class SettingsOverlay(BaseOverlay):
         self.live_playback_mode_combo.addItem("流畅优先", "smooth")
         self.live_playback_mode_combo.addItem("画质优先", "quality")
 
+        self.panel_interaction_mode_combo = QComboBox()
+        self.panel_interaction_mode_combo.addItem("鼠标移动触发", "hover")
+        self.panel_interaction_mode_combo.addItem("鼠标点击触发", "click")
+
         self.language_combo = QComboBox()
         for language in SUPPORTED_LANGUAGES:
             self.language_combo.addItem(LANGUAGE_LABELS.get(language, language), language)
@@ -131,6 +135,7 @@ class SettingsOverlay(BaseOverlay):
         form.addRow("浏览器端口", self.browser_port_spin)
         form.addRow("本地渲染模式", self.local_playback_mode_combo)
         form.addRow("直播渲染模式", self.live_playback_mode_combo)
+        form.addRow("面板滑入操作模式", self.panel_interaction_mode_combo)
         form.addRow("界面语言", self.language_combo)
         form.addRow("悬浮时钟", self.clock_weekday_check)
         form.addRow("启动兼容", self.safe_mode_check)
@@ -180,6 +185,7 @@ class SettingsOverlay(BaseOverlay):
         language=DEFAULT_LANGUAGE,
         clock_show_weekday=True,
         safe_mode=False,
+        panel_interaction_mode="hover",
     ):
         self.system_proxy_label.setText(system_proxy or "无")
         source_text = {
@@ -196,6 +202,8 @@ class SettingsOverlay(BaseOverlay):
         self.local_playback_mode_combo.setCurrentIndex(local_index if local_index >= 0 else 0)
         live_index = self.live_playback_mode_combo.findData(live_playback_mode or "smooth")
         self.live_playback_mode_combo.setCurrentIndex(live_index if live_index >= 0 else 0)
+        panel_mode_index = self.panel_interaction_mode_combo.findData(panel_interaction_mode or "hover")
+        self.panel_interaction_mode_combo.setCurrentIndex(panel_mode_index if panel_mode_index >= 0 else 0)
         selected_language = language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
         language_index = self.language_combo.findData(selected_language)
         self.language_combo.setCurrentIndex(language_index if language_index >= 0 else 0)
@@ -218,5 +226,6 @@ class SettingsOverlay(BaseOverlay):
             self.language_combo.currentData() or DEFAULT_LANGUAGE,
             self.clock_weekday_check.isChecked(),
             self.safe_mode_check.isChecked(),
+            self.panel_interaction_mode_combo.currentData() or "hover",
         )
         self.hide_with_animation()

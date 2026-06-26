@@ -2565,6 +2565,7 @@ class PlayerPanel(QFrame):
     loading_overlay_raised = Signal()
     local_media_finished = Signal(dict)
     playback_progress_changed = Signal(float, object)
+    playback_ui_state_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2576,6 +2577,7 @@ class PlayerPanel(QFrame):
         self._controls_visible = False
         self._controls_suppressed = False
         self._playback_active = False
+        self._panel_interaction_mode = "hover"
         self._last_cursor_pos = None
 
         root_layout = QVBoxLayout(self)
@@ -2754,6 +2756,7 @@ class PlayerPanel(QFrame):
 
     def _ensure_mpv_widget(self):
         if self.mpv_widget is not None:
+            self.video_stack.setCurrentWidget(self.mpv_widget)
             return
         self.mpv_widget = MpvVideoWidget(self.video_stack)
         self.video_stack.addWidget(self.mpv_widget)
@@ -2847,7 +2850,7 @@ class PlayerPanel(QFrame):
 
     def _set_triggers_enabled(self, enabled):
         self._triggers_enabled = enabled
-        if enabled:
+        if enabled and self._panel_interaction_mode == "hover":
             self._reposition_triggers()
             self.top_edge.show()
             self.left_edge.show()
@@ -2887,6 +2890,58 @@ class PlayerPanel(QFrame):
             self._controls_hide_timer.stop()
             self._hide_controls()
 
+    def set_panel_interaction_mode(self, mode: str):
+        self._panel_interaction_mode = "click" if str(mode or "").lower() == "click" else "hover"
+        if self._panel_interaction_mode == "click":
+            self._controls_hide_timer.stop()
+            self.top_edge.hide()
+            self.left_edge.hide()
+            self.right_edge.hide()
+        elif self._triggers_enabled:
+            self._reposition_triggers()
+            self.top_edge.show()
+            self.left_edge.show()
+            self.right_edge.show()
+            self._raise_triggers()
+
+    def is_playback_active(self) -> bool:
+        return bool(
+            self._playback_active
+            or (self.mpv_widget is not None and self.video_stack.currentWidget() is self.mpv_widget)
+        )
+
+    def show_top_bar_manual(self):
+        self._position_controls()
+        self.top_bar.show()
+        self.top_bar.raise_()
+        self._controls_visible = self.top_bar.isVisible() or self.bottom_bar.isVisible()
+
+    def hide_top_bar_manual(self):
+        self.top_bar.hide()
+        self._controls_visible = self.top_bar.isVisible() or self.bottom_bar.isVisible()
+
+    def toggle_top_bar_manual(self):
+        if self.top_bar.isVisible():
+            self.hide_top_bar_manual()
+        else:
+            self.show_top_bar_manual()
+
+    def show_bottom_bar_manual(self):
+        self._position_controls()
+        self.bottom_bar.show()
+        self.bottom_bar.raise_()
+        self._controls_visible = self.top_bar.isVisible() or self.bottom_bar.isVisible()
+
+    def hide_bottom_bar_manual(self):
+        self.bottom_bar.hide()
+        self._controls_visible = self.top_bar.isVisible() or self.bottom_bar.isVisible()
+
+    def toggle_bottom_bar_manual(self):
+        if self.bottom_bar.isVisible():
+            self.hide_bottom_bar_manual()
+        else:
+            self.show_bottom_bar_manual()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.loading_overlay.setGeometry(self.video_stack_host.rect())
@@ -2897,7 +2952,7 @@ class PlayerPanel(QFrame):
             self._position_controls()
 
     def mouseMoveEvent(self, event):
-        if self._playback_active and not self._controls_suppressed:
+        if self._panel_interaction_mode != "click" and self._playback_active and not self._controls_suppressed:
             self._show_controls()
         super().mouseMoveEvent(event)
 
@@ -2927,6 +2982,8 @@ class PlayerPanel(QFrame):
         )
 
     def _poll_cursor(self):
+        if self._panel_interaction_mode == "click":
+            return
         if self.mpv_widget is None:
             return
         if not self._playback_active:
@@ -2959,7 +3016,8 @@ class PlayerPanel(QFrame):
         self.top_bar.raise_()
         self.bottom_bar.raise_()
         self._controls_visible = True
-        self._controls_hide_timer.start(3000)
+        if self._panel_interaction_mode != "click":
+            self._controls_hide_timer.start(3000)
 
     def _hide_controls(self):
         self.top_bar.hide()
@@ -2995,7 +3053,11 @@ class PlayerPanel(QFrame):
         self.set_loading(False)
         self.warning_label.setVisible(False)
         self.bottom_bar.set_playing(True)
-        self._show_controls()
+        if self._panel_interaction_mode != "click":
+            self._show_controls()
+        else:
+            self._hide_controls()
+        self.playback_ui_state_changed.emit()
 
     def set_channels(self, channels):
         self._channels = list(channels)
@@ -3051,6 +3113,7 @@ class PlayerPanel(QFrame):
         self._set_channel_title(channel)
         self.state_badge.setText("加载中")
         self._ensure_mpv_widget()
+        self.playback_ui_state_changed.emit()
         if self.mpv_widget is not None:
             initial_tracks = self.mpv_widget._extract_static_tracks(channel)
             self.top_bar.populate_tracks(initial_tracks)
@@ -3068,6 +3131,7 @@ class PlayerPanel(QFrame):
         self.state_badge.setText("待机")
         self.set_loading(False)
         self.warning_label.setVisible(False)
+        self.playback_ui_state_changed.emit()
 
     def set_running_state(self, running, _url=""):
         if not running and self.state_badge.text() != "播放中":

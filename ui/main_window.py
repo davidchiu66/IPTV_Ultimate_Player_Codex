@@ -7,8 +7,8 @@ import time
 import webbrowser
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QObject, QEvent, QPoint, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -44,6 +44,7 @@ from ui.playlist_album_settings_dialog import PlaylistAlbumSettingsDialog
 from ui.playlist_overlay import PlaylistOverlay
 from ui.settings_overlay import SettingsOverlay
 from ui.about_dialog import AboutDialog
+from ui.edge_trigger_buttons import EdgeTriggerButton
 from ui import message_dialogs
 from ui import input_dialogs
 from utils.diagnostics import (
@@ -72,6 +73,11 @@ from utils.playback_settings import (
 )
 from utils.clock_settings import get_clock_show_weekday, set_clock_show_weekday
 from utils.compatibility_settings import get_compatibility_settings, set_compatibility_safe_mode
+from utils.panel_interaction_settings import (
+    PANEL_INTERACTION_CLICK,
+    get_panel_interaction_mode,
+    set_panel_interaction_mode,
+)
 from utils.media_types import (
     CHANNEL_RESOURCE_EXTENSIONS,
     LOCAL_AUDIO_EXTENSIONS,
@@ -400,6 +406,17 @@ class MainWindow(QMainWindow):
         self._pending_update_result = None
         self._pending_update_asset = None
         self._epg_load_warning_shown = False
+        self._panel_interaction_mode = get_panel_interaction_mode()
+        self._edge_trigger_buttons = {}
+        self._edge_triggers_input_visible = True
+        self._edge_triggers_last_cursor_pos = QCursor.pos()
+        self._edge_trigger_idle_timer = QTimer(self)
+        self._edge_trigger_idle_timer.setSingleShot(True)
+        self._edge_trigger_idle_timer.setInterval(4200)
+        self._edge_trigger_idle_timer.timeout.connect(self._hide_edge_click_triggers_for_idle)
+        self._edge_trigger_cursor_poll_timer = QTimer(self)
+        self._edge_trigger_cursor_poll_timer.setInterval(240)
+        self._edge_trigger_cursor_poll_timer.timeout.connect(self._poll_edge_trigger_cursor_activity)
         self._playback_queue_context = {
             "kind": "",
             "current_key": "",
@@ -484,6 +501,8 @@ class MainWindow(QMainWindow):
         self.detail_overlay = DetailOverlay(host)
         self.playlist_overlay = PlaylistOverlay(host)
         self.settings_overlay = SettingsOverlay(host)
+        self._create_edge_click_triggers(host)
+        self._apply_panel_interaction_mode(self._panel_interaction_mode)
 
         # 工具栏只保留全局入口：频道资源、设置
         self.toolbar_overlay.add_settings_button(lambda: self.toolbar_overlay.settings_requested.emit())
@@ -505,6 +524,7 @@ class MainWindow(QMainWindow):
         self.player_panel.loading_overlay_raised.connect(self._raise_interactive_overlays)
         self.player_panel.local_media_finished.connect(self._on_local_media_finished)
         self.player_panel.playback_progress_changed.connect(self._on_playback_progress_changed)
+        self.player_panel.playback_ui_state_changed.connect(self._schedule_edge_click_trigger_update)
 
         # 播放器：播放控制
         self.player_panel.channel_play_requested.connect(self.play_channel)
@@ -879,6 +899,213 @@ class MainWindow(QMainWindow):
         active_id = self.playlist_album_mgr.data.get("active_album_id") or "default"
         self.playlist_overlay.set_albums(albums, active_id)
 
+    def _create_edge_click_triggers(self, host) -> None:
+        self._edge_trigger_buttons = {}
+        for edge in ("left", "right", "top", "bottom"):
+            button = EdgeTriggerButton(edge, host)
+            button.triggered.connect(self._on_edge_click_triggered)
+            button.hide()
+            self._edge_trigger_buttons[edge] = button
+
+    def _is_click_panel_mode(self) -> bool:
+        return self._panel_interaction_mode == PANEL_INTERACTION_CLICK
+
+    def _player_active_for_edge_triggers(self) -> bool:
+        if self.player_panel.is_playback_active():
+            return True
+        mpv_widget = getattr(self.player_panel, "mpv_widget", None)
+        video_stack = getattr(self.player_panel, "video_stack", None)
+        return bool(mpv_widget is not None and video_stack is not None and video_stack.currentWidget() is mpv_widget)
+
+    def _edge_trigger_idle_mode_active(self) -> bool:
+        return self._is_click_panel_mode() and self._player_active_for_edge_triggers()
+
+    def _sync_edge_trigger_idle_tracking(self, *, reset_timer: bool = False) -> None:
+        if self._edge_trigger_idle_mode_active():
+            if not self._edge_trigger_cursor_poll_timer.isActive():
+                self._edge_triggers_last_cursor_pos = QCursor.pos()
+                self._edge_trigger_cursor_poll_timer.start()
+            if reset_timer or (self._edge_triggers_input_visible and not self._edge_trigger_idle_timer.isActive()):
+                self._edge_trigger_idle_timer.start()
+            return
+        self._edge_trigger_cursor_poll_timer.stop()
+        self._edge_trigger_idle_timer.stop()
+        self._edge_triggers_input_visible = True
+
+    def _show_edge_click_triggers_for_activity(self) -> None:
+        if not self._edge_trigger_idle_mode_active():
+            self._sync_edge_trigger_idle_tracking()
+            self._update_edge_click_triggers()
+            return
+        self._edge_triggers_input_visible = True
+        self._edge_triggers_last_cursor_pos = QCursor.pos()
+        self._sync_edge_trigger_idle_tracking(reset_timer=True)
+        self._update_edge_click_triggers()
+
+    def _hide_edge_click_triggers_for_idle(self) -> None:
+        if not self._edge_trigger_idle_mode_active():
+            self._sync_edge_trigger_idle_tracking()
+            self._update_edge_click_triggers()
+            return
+        self._edge_triggers_input_visible = False
+        self._update_edge_click_triggers()
+
+    def _poll_edge_trigger_cursor_activity(self) -> None:
+        if not self._edge_trigger_idle_mode_active():
+            self._sync_edge_trigger_idle_tracking()
+            self._update_edge_click_triggers()
+            return
+        current_pos = QCursor.pos()
+        if current_pos != self._edge_triggers_last_cursor_pos:
+            self._show_edge_click_triggers_for_activity()
+
+    def _apply_panel_interaction_mode(self, mode: str) -> None:
+        self._panel_interaction_mode = PANEL_INTERACTION_CLICK if str(mode or "").lower() == PANEL_INTERACTION_CLICK else "hover"
+        if hasattr(self, "player_panel"):
+            self.player_panel.set_panel_interaction_mode(self._panel_interaction_mode)
+        if hasattr(self, "toolbar_overlay"):
+            self.toolbar_overlay.set_auto_hide_enabled(not self._is_click_panel_mode())
+        for overlay_name in (
+            "nav_overlay",
+            "channel_list_overlay",
+            "detail_overlay",
+            "playlist_overlay",
+            "settings_overlay",
+        ):
+            overlay = getattr(self, overlay_name, None)
+            if overlay is not None and hasattr(overlay, "set_auto_hide_enabled"):
+                overlay.set_auto_hide_enabled(not self._is_click_panel_mode())
+        self._update_edge_click_triggers()
+
+    def _position_edge_click_triggers(self) -> None:
+        if not getattr(self, "_edge_trigger_buttons", None):
+            return
+        host = self.player_panel.video_stack_host
+        width = max(0, host.width())
+        height = max(0, host.height())
+        margin = 4
+        origin = host.mapToGlobal(QPoint(0, 0))
+
+        def move_button(button, x: int, y: int) -> None:
+            if button is None:
+                return
+            if button.isWindow():
+                button.move(origin.x() + x, origin.y() + y)
+            else:
+                button.move(x, y)
+
+        left = self._edge_trigger_buttons.get("left")
+        right = self._edge_trigger_buttons.get("right")
+        top = self._edge_trigger_buttons.get("top")
+        bottom = self._edge_trigger_buttons.get("bottom")
+        if left is not None:
+            move_button(left, margin, max(margin, (height - left.height()) // 2))
+        if right is not None:
+            move_button(right, max(margin, width - right.width() - margin), max(margin, (height - right.height()) // 2))
+        if top is not None:
+            move_button(top, max(margin, (width - top.width()) // 2), margin)
+        if bottom is not None:
+            move_button(bottom, max(margin, (width - bottom.width()) // 2), max(margin, height - bottom.height() - margin))
+
+    def _update_edge_click_triggers(self) -> None:
+        if not getattr(self, "_edge_trigger_buttons", None):
+            return
+        click_mode = self._is_click_panel_mode() and self.isVisible() and not self.isMinimized()
+        active = self._player_active_for_edge_triggers() if click_mode else False
+        self._sync_edge_trigger_idle_tracking()
+        input_visible = self._edge_triggers_input_visible or not active
+        states = {
+            "left": bool(
+                (getattr(self, "nav_overlay", None) and self.nav_overlay.isVisible())
+                or (getattr(self, "channel_list_overlay", None) and self.channel_list_overlay.isVisible())
+            ),
+            "right": bool(getattr(self, "playlist_overlay", None) and self.playlist_overlay.isVisible()),
+            "top": bool(
+                self.player_panel.top_bar.isVisible()
+                if active
+                else getattr(self, "toolbar_overlay", None) and self.toolbar_overlay.isVisible()
+            ),
+            "bottom": bool(self.player_panel.bottom_bar.isVisible()) if active else False,
+        }
+        visible_buttons = []
+        for edge, button in self._edge_trigger_buttons.items():
+            button.setExpanded(states.get(edge, False))
+            button.setVisible(click_mode and input_visible and (edge != "bottom" or active))
+            if button.isVisible():
+                visible_buttons.append(button)
+        self._position_edge_click_triggers()
+        for button in visible_buttons:
+            if button.isWindow():
+                button.show()
+            button.raise_()
+
+    def _schedule_edge_click_trigger_update(self) -> None:
+        if not getattr(self, "_edge_trigger_buttons", None):
+            return
+        QTimer.singleShot(0, self._update_edge_click_triggers)
+        QTimer.singleShot(320, self._update_edge_click_triggers)
+        QTimer.singleShot(1000, self._update_edge_click_triggers)
+        QTimer.singleShot(2500, self._update_edge_click_triggers)
+
+    def _on_edge_click_triggered(self, edge: str) -> None:
+        if not self._is_click_panel_mode():
+            return
+        if self._edge_trigger_idle_mode_active():
+            self._edge_triggers_input_visible = True
+            self._edge_triggers_last_cursor_pos = QCursor.pos()
+            self._edge_trigger_idle_timer.start()
+        if edge == "left":
+            self._toggle_left_edge_panel()
+        elif edge == "right":
+            self._toggle_playlist_overlay()
+        elif edge == "top":
+            if self._player_active_for_edge_triggers():
+                self.player_panel.toggle_top_bar_manual()
+            else:
+                self._toggle_toolbar_overlay()
+        elif edge == "bottom" and self._player_active_for_edge_triggers():
+            self.player_panel.toggle_bottom_bar_manual()
+        self._schedule_edge_click_trigger_update()
+
+    def _toggle_left_edge_panel(self) -> None:
+        if self.channel_list_overlay.isVisible():
+            self.channel_list_overlay.hide_with_animation()
+            self._sync_player_controls_suppression()
+            self._schedule_edge_click_trigger_update()
+            return
+        if self.nav_overlay.isVisible():
+            self.nav_overlay.hide_with_animation()
+            self._sync_player_controls_suppression()
+            self._schedule_edge_click_trigger_update()
+            return
+        self._show_left_edge_panel()
+
+    def _toggle_navigation_overlay(self) -> None:
+        if self.nav_overlay.isVisible():
+            self.nav_overlay.hide_with_animation()
+            self._sync_player_controls_suppression()
+            self._schedule_edge_click_trigger_update()
+            return
+        self._show_navigation()
+
+    def _toggle_playlist_overlay(self) -> None:
+        if self.playlist_overlay.isVisible():
+            self.playlist_overlay.hide_with_animation()
+            self._sync_player_controls_suppression()
+            self._schedule_edge_click_trigger_update()
+            return
+        self._show_playlist_overlay()
+
+    def _toggle_toolbar_overlay(self) -> None:
+        if self.toolbar_overlay.isVisible():
+            self.toolbar_overlay.hide_with_animation()
+            self._schedule_edge_click_trigger_update()
+            return
+        self._show_toolbar()
+        if self._is_click_panel_mode():
+            self.toolbar_overlay.set_auto_hide_enabled(False)
+        self._schedule_edge_click_trigger_update()
+
     def _show_playlist_overlay(self) -> None:
         """Show the right-side local playback playlist."""
         if self.playlist_overlay.isVisible():
@@ -897,6 +1124,7 @@ class MainWindow(QMainWindow):
         self.playlist_overlay.show_with_animation()
         self.playlist_overlay.raise_()
         self._sync_player_controls_suppression()
+        self._schedule_edge_click_trigger_update()
 
     def _on_playlist_album_changed(self, album_id: str) -> None:
         """Persist active playlist album."""
@@ -1209,7 +1437,9 @@ class MainWindow(QMainWindow):
 
     def _is_live_playback_context(self):
         """Return whether the left edge should open the channel list."""
-        if not self.playlist_mgr.streams:
+        overlay_channels = getattr(getattr(self, "channel_list_overlay", None), "_channels", []) or []
+        has_channel_list = bool(self.playlist_mgr.streams or overlay_channels)
+        if not has_channel_list:
             return False
 
         mpv_widget = getattr(self.player_panel, "mpv_widget", None)
@@ -1246,6 +1476,7 @@ class MainWindow(QMainWindow):
         self.channel_list_overlay.show_with_animation()
         self.channel_list_overlay.raise_()
         self._sync_player_controls_suppression()
+        self._schedule_edge_click_trigger_update()
 
     def _show_detail(self):
         """显示详情覆盖层（与频道列表互斥）"""
@@ -1264,6 +1495,7 @@ class MainWindow(QMainWindow):
         self.detail_overlay.show_with_animation()
         self.detail_overlay.raise_()
         self._sync_player_controls_suppression()
+        self._schedule_edge_click_trigger_update()
 
     def _show_navigation(self):
         """显示资源库覆盖层。"""
@@ -1281,6 +1513,7 @@ class MainWindow(QMainWindow):
         self.nav_overlay.show_with_animation()
         self.nav_overlay.raise_()
         self._sync_player_controls_suppression()
+        self._schedule_edge_click_trigger_update()
 
     def _show_settings(self):
         """显示右侧应用设置面板。"""
@@ -1311,16 +1544,21 @@ class MainWindow(QMainWindow):
             get_language(),
             get_clock_show_weekday(),
             get_compatibility_settings().get("safe_mode", False),
+            self._panel_interaction_mode,
         )
         self.settings_overlay.show_with_animation()
         self.settings_overlay.raise_()
         self._sync_player_controls_suppression()
+        self._schedule_edge_click_trigger_update()
 
     def _show_toolbar(self):
         """显示工具栏覆盖层（鼠标移到顶部边缘）"""
         if self.toolbar_overlay.isVisible():
             return  # 已显示，避免重复触发
         self.toolbar_overlay.show_with_animation()
+        if self._is_click_panel_mode():
+            self.toolbar_overlay.set_auto_hide_enabled(False)
+        self._schedule_edge_click_trigger_update()
 
     def _sync_player_controls_suppression(self):
         """侧边交互面板可见时，暂停播放控制条自动滑入。"""
@@ -1340,6 +1578,7 @@ class MainWindow(QMainWindow):
         elif not side_overlay_visible and hasattr(self.player_panel, "_enable_triggers_interaction"):
             self.player_panel._enable_triggers_interaction()
         self._raise_interactive_overlays()
+        self._schedule_edge_click_trigger_update()
 
     def _raise_interactive_overlays(self):
         """Keep side panels above the loading mask so they stay clickable."""
@@ -1359,6 +1598,7 @@ class MainWindow(QMainWindow):
         ):
             if overlay.isVisible():
                 overlay.raise_()
+        self._update_edge_click_triggers()
 
     def _toggle_fullscreen(self):
         """切换主窗口全屏。整窗切换可保持覆盖层层级与父子关系不变，
@@ -1524,6 +1764,14 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.KeyPress and self._event_belongs_to_main_window(watched):
             if self._handle_player_key_shortcut(event, watched):
                 return True
+        if self._edge_trigger_idle_mode_active() and self._event_belongs_to_main_window(watched):
+            if event.type() in (
+                QEvent.MouseMove,
+                QEvent.MouseButtonPress,
+                QEvent.MouseButtonRelease,
+                QEvent.Wheel,
+            ):
+                self._show_edge_click_triggers_for_activity()
         if self.isFullScreen() and self._event_belongs_to_main_window(watched):
             if event.type() in (
                 QEvent.MouseMove,
@@ -1631,6 +1879,7 @@ class MainWindow(QMainWindow):
                 x = 10 if ov.side == 'left' else (w - ow - 10)
                 ov.setGeometry(x, 10, ow, h - 20)
                 ov.raise_()
+        self._update_edge_click_triggers()
 
     def keyPressEvent(self, event):
         """Handle player keyboard shortcuts and fullscreen shortcuts."""
@@ -1655,10 +1904,16 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._reposition_visible_overlays()
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._position_floating()
+        self._update_edge_click_triggers()
+
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
             self._apply_fullscreen_overlay_policy()
+            self._schedule_edge_click_trigger_update()
             self._log_fullscreen_state("window.state_changed", entering=self.isFullScreen())
 
     def showEvent(self, event):
@@ -1689,6 +1944,7 @@ class MainWindow(QMainWindow):
             self.player_panel.top_edge.raise_()
             self.player_panel.left_edge.raise_()
             self.player_panel.right_edge.raise_()
+        self._update_edge_click_triggers()
 
     def _apply_styles(self):
         """Apply the shared glassmorphism application theme."""
@@ -2095,6 +2351,7 @@ class MainWindow(QMainWindow):
         language="zh_CN",
         clock_show_weekday=True,
         safe_mode=False,
+        panel_interaction_mode="hover",
     ):
         old_port = self.server_port
         set_user_proxy(user_proxy, enabled=True)
@@ -2105,6 +2362,8 @@ class MainWindow(QMainWindow):
         set_live_playback_mode(live_playback_mode)
         set_language(language)
         set_clock_show_weekday(clock_show_weekday)
+        set_panel_interaction_mode(panel_interaction_mode)
+        self._apply_panel_interaction_mode(panel_interaction_mode)
         previous_safe_mode = bool(get_compatibility_settings().get("safe_mode", False))
         set_compatibility_safe_mode(safe_mode)
         self.floating_clock.set_show_weekday(clock_show_weekday)
@@ -2701,6 +2960,7 @@ class MainWindow(QMainWindow):
         if self.detail_overlay.isVisible():
             self.detail_overlay.set_channel(channel)
         self.player_panel.play_channel(channel)
+        self._schedule_edge_click_trigger_update()
 
         # 清除浏览器缓存（频道可能改变）
         self._browser_cache = None
@@ -2732,6 +2992,7 @@ class MainWindow(QMainWindow):
     def stop_playback(self):
         self.player_panel.stop_playback()
         self._apply_fullscreen_overlay_policy()
+        self._schedule_edge_click_trigger_update()
 
     def _show_probe_retry_dialog(self, name, format_name, kind, code, detail, error_info=None):
         error_info = dict(error_info or {})

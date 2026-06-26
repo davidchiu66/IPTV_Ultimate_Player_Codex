@@ -104,6 +104,7 @@ class ToolbarOverlay(QFrame):
         self.installEventFilter(self)
         self.animation = None
         self.settings_button = None
+        self._auto_hide_enabled = True
 
     def _make_icon_button(self, icon_name, tooltip):
         icon = "playlist" if icon_name == "menu" else icon_name
@@ -123,12 +124,15 @@ class ToolbarOverlay(QFrame):
         return super().eventFilter(obj, event)
 
     def reset_hide_timer(self):
+        if not self._auto_hide_enabled:
+            self.hide_timer.stop()
+            return
         self.hide_timer.stop()
         self.hide_timer.start(5000)
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
-        if self.isVisible():
+        if self._auto_hide_enabled and self.isVisible():
             self.leave_timer.start(self.leave_delay)
 
     def enterEvent(self, event):
@@ -136,8 +140,14 @@ class ToolbarOverlay(QFrame):
         self.leave_timer.stop()
 
     def _on_leave_timeout(self):
-        if self.isVisible():
+        if self._auto_hide_enabled and self.isVisible():
             self.hide_with_animation()
+
+    def set_auto_hide_enabled(self, enabled):
+        self._auto_hide_enabled = bool(enabled)
+        if not self._auto_hide_enabled:
+            self.hide_timer.stop()
+            self.leave_timer.stop()
 
     def show_with_animation(self):
         if not self.parent():

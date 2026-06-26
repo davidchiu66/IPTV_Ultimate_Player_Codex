@@ -32,6 +32,7 @@ class BaseOverlay(QFrame):
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self._maybe_hide)
+        self._auto_hide_enabled = True
 
         # 事件过滤器（用于在交互时暂停滑出）
         self.installEventFilter(self)
@@ -73,13 +74,21 @@ class BaseOverlay(QFrame):
 
     def reset_hide_timer(self):
         """（重新）启动滑出定时器：hide_delay 后滑出。"""
+        if not self._auto_hide_enabled:
+            self.hide_timer.stop()
+            return
         self.hide_timer.stop()
         self.hide_timer.start(self.hide_delay)
+
+    def set_auto_hide_enabled(self, enabled):
+        self._auto_hide_enabled = bool(enabled)
+        if not self._auto_hide_enabled:
+            self.hide_timer.stop()
 
     def leaveEvent(self, event):
         """鼠标离开覆盖层，启动滑出定时器（3 秒后滑出）。"""
         super().leaveEvent(event)
-        if self.isVisible():
+        if self._auto_hide_enabled and self.isVisible():
             self.reset_hide_timer()
 
     def enterEvent(self, event):
