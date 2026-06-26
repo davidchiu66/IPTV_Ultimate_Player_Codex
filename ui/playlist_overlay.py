@@ -62,12 +62,33 @@ class PlaylistOverlay(BaseOverlay):
                 color: #f2f6ff;
                 border: 1px solid rgba(120, 180, 255, 105);
                 border-radius: 8px;
-                padding: 6px 8px;
+                padding: 6px 38px 6px 10px;
                 min-height: 24px;
             }
             QComboBox:hover {
                 border: 1px solid rgba(120, 180, 255, 170);
                 background: rgba(32, 42, 57, 230);
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 32px;
+                border-left: 1px solid rgba(120, 180, 255, 90);
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+                background: rgba(120, 180, 255, 34);
+            }
+            QComboBox::down-arrow {
+                image: none;
+                width: 0;
+                height: 0;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #dceaff;
+                margin-right: 10px;
+            }
+            QComboBox::drop-down:hover {
+                background: rgba(120, 180, 255, 58);
             }
             QComboBox QAbstractItemView {
                 background: #202a39;
@@ -129,6 +150,7 @@ class PlaylistOverlay(BaseOverlay):
 
         album_row = QHBoxLayout()
         self.album_combo = QComboBox()
+        self.album_combo.setToolTip("点击切换播放专辑")
         self.new_button = QPushButton("+")
         self.new_button.setFixedWidth(36)
         album_row.addWidget(self.album_combo, 1)
@@ -192,6 +214,9 @@ class PlaylistOverlay(BaseOverlay):
             if album_id == self._active_album_id:
                 active_index = index
         self.album_combo.setCurrentIndex(active_index if self._albums else -1)
+        self.album_combo.setToolTip(
+            "点击切换播放专辑" if len(self._albums) > 1 else "当前播放专辑"
+        )
         self.album_combo.blockSignals(False)
         if self._albums:
             self._active_album_id = self.album_combo.currentData() or self._active_album_id

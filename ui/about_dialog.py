@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from ui.dialog_style import apply_light_dialog_style
@@ -14,12 +14,14 @@ from utils.app_paths import resource_path
 APP_NAME = "IPTV Ultimate Player"
 APP_DISPLAY_NAME = "IPTV 播放器"
 GITHUB_URL = "https://github.com/davidchiu66/IPTV_Ultimate_Player_Codex"
-RELEASES_URL = f"{GITHUB_URL}/releases"
 APP_ICON_PATH = "docs/assets/icons/iptv-icon-02-signal-orbit-256.png"
 
 
 class AboutDialog(QDialog):
     """Glass-style application about dialog."""
+
+    check_update_requested = Signal()
+    online_update_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -92,11 +94,11 @@ class AboutDialog(QDialog):
         actions.addStretch(1)
 
         check_button = QPushButton("检查版本更新", self)
-        check_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+        check_button.clicked.connect(self.check_update_requested.emit)
         actions.addWidget(check_button)
 
         update_button = QPushButton("在线更新", self)
-        update_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+        update_button.clicked.connect(self.online_update_requested.emit)
         actions.addWidget(update_button)
 
         close_button = QPushButton("关闭", self)

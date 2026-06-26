@@ -61,6 +61,7 @@ class NavigationOverlay(BaseOverlay):
 
     file_selected = Signal(str)
     open_directory_requested = Signal()
+    open_file_requested = Signal()
     open_url_requested = Signal()
     refresh_requested = Signal()
     delete_file_requested = Signal(str)
@@ -155,25 +156,33 @@ class NavigationOverlay(BaseOverlay):
 
         self.tabs = QTabWidget()
         self.tabs.currentChanged.connect(lambda _index: self.favorites_refresh_requested.emit())
+        self.tabs.currentChanged.connect(self._update_global_cancel_visibility)
         layout.addWidget(self.tabs, 1)
 
         self._build_directory_tab()
         self._build_resource_favorites_tab()
         self._build_channel_favorites_tab()
 
-        self.cancel_button = QPushButton("取消")
-        self.cancel_button.setStyleSheet(self._button_style())
-        self.cancel_button.clicked.connect(self.hide_with_animation)
-        layout.addWidget(self.cancel_button)
+        self.global_cancel_button = QPushButton("取消")
+        self.global_cancel_button.setStyleSheet(self._button_style())
+        self.global_cancel_button.clicked.connect(self.hide_with_animation)
+        layout.addWidget(self.global_cancel_button)
+        self._update_global_cancel_visibility(self.tabs.currentIndex())
 
         self.btn_open.clicked.connect(self.open_directory_requested.emit)
+        self.btn_open_file.clicked.connect(self.open_file_requested.emit)
         self.btn_open_url.clicked.connect(self.open_url_requested.emit)
         self.btn_refresh.clicked.connect(self.refresh_requested.emit)
         self.btn_delete.clicked.connect(self._on_delete_clicked)
+        self.cancel_button.clicked.connect(self.hide_with_animation)
         self.file_list.itemDoubleClicked.connect(self._on_file_clicked)
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self._show_file_context_menu)
         self.file_list.viewport().installEventFilter(self)
+
+    def _update_global_cancel_visibility(self, index: int) -> None:
+        if hasattr(self, "global_cancel_button"):
+            self.global_cancel_button.setVisible(index != 0)
 
     def eventFilter(self, watched, event):
         if not hasattr(self, "file_list"):
@@ -269,6 +278,7 @@ class NavigationOverlay(BaseOverlay):
         for button in (
             getattr(self, "btn_open", None),
             getattr(self, "btn_open_url", None),
+            getattr(self, "btn_open_file", None),
             getattr(self, "btn_refresh", None),
             getattr(self, "btn_delete", None),
             getattr(self, "btn_use_resource_favorite", None),
@@ -278,6 +288,7 @@ class NavigationOverlay(BaseOverlay):
             getattr(self, "btn_remove_channel_favorite", None),
             getattr(self, "btn_refresh_channel_favorites", None),
             getattr(self, "cancel_button", None),
+            getattr(self, "global_cancel_button", None),
         ):
             if button is not None:
                 button.setStyleSheet(button_style)
@@ -301,14 +312,26 @@ class NavigationOverlay(BaseOverlay):
 
         self.btn_open = QPushButton("打开资源目录")
         self.btn_open_url = QPushButton("打开在线资源")
-        self.btn_refresh = QPushButton("刷新当前目录")
+        self.btn_open_file = QPushButton("打开资源文件")
+        self.btn_refresh = QPushButton("刷新当前资源")
         self.btn_delete = QPushButton("删除选中文件")
-        for btn in [self.btn_open, self.btn_open_url, self.btn_refresh, self.btn_delete]:
+        self.cancel_button = QPushButton("取消")
+        for btn in [self.btn_open, self.btn_open_url, self.btn_open_file, self.btn_refresh, self.btn_delete, self.cancel_button]:
             btn.setStyleSheet(self._button_style())
 
-        layout.addWidget(self.btn_open)
-        layout.addWidget(self.btn_open_url)
-        layout.addWidget(self.btn_refresh)
+        open_row = QHBoxLayout()
+        open_row.setContentsMargins(0, 0, 0, 0)
+        open_row.setSpacing(8)
+        open_row.addWidget(self.btn_open, 1)
+        open_row.addWidget(self.btn_open_url, 1)
+        layout.addLayout(open_row)
+
+        refresh_row = QHBoxLayout()
+        refresh_row.setContentsMargins(0, 0, 0, 0)
+        refresh_row.setSpacing(8)
+        refresh_row.addWidget(self.btn_open_file, 1)
+        refresh_row.addWidget(self.btn_refresh, 1)
+        layout.addLayout(refresh_row)
 
         info_label = QLabel("当前目录")
         info_label.setObjectName("sectionLabel")
@@ -362,7 +385,13 @@ class NavigationOverlay(BaseOverlay):
         self.file_list.setItemDelegate(FavoriteStarDelegate(self.file_list))
         self._configure_list_widget(self.file_list)
         layout.addWidget(self.file_list, 1)
-        layout.addWidget(self.btn_delete)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        action_row.addWidget(self.btn_delete, 1)
+        action_row.addWidget(self.cancel_button, 1)
+        layout.addLayout(action_row)
         self.tabs.addTab(page, "资源目录")
 
     def _build_resource_favorites_tab(self) -> None:

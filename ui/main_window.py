@@ -2,16 +2,16 @@ import json
 import os
 import copy
 import re
-import subprocess
 import threading
 import time
 import webbrowser
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QObject, QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,16 @@ from utils.media_types import (
 from utils.url_cleaning import clean_media_url
 from utils.i18n import get_language, set_language
 from utils.app_paths import resource_path, runtime_path, user_channels_dir, user_epg_dir
+from utils.update_manager import (
+    RELEASES_URL,
+    check_for_updates,
+    detect_distribution_kind,
+    download_asset,
+    launch_installer,
+    launch_portable_updater,
+    select_update_asset,
+    zip_contains_executable,
+)
 from ui.theme import APP_QSS
 from ui.dialog_style import apply_light_dialog_style
 from ui.window_chrome import handle_frameless_native_event, install_custom_window_chrome
@@ -199,6 +210,143 @@ class OnlineResourceProgressDialog(QDialog):
         self.message_label.setText(message or "")
 
 
+class UpdateDownloadDialog(QDialog):
+    """Glass-style download progress dialog for application updates."""
+
+    cancel_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._closing_after_finish = False
+        self.setWindowTitle("在线更新")
+        self.setModal(True)
+        self.setMinimumWidth(460)
+        apply_light_dialog_style(self)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("正在下载更新")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
+
+        self.message_label = QLabel("-")
+        self.message_label.setWordWrap(True)
+        self.message_label.setObjectName("hintLabel")
+        layout.addWidget(self.message_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                background: rgba(8, 12, 18, 180);
+                border: 1px solid rgba(120, 180, 255, 90);
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(105, 178, 255, 120),
+                    stop:0.5 rgba(140, 205, 255, 230),
+                    stop:1 rgba(105, 178, 255, 120)
+                );
+                border-radius: 4px;
+            }
+            """
+        )
+        layout.addWidget(self.progress_bar)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        actions.addWidget(self.cancel_button)
+        layout.addLayout(actions)
+
+    @staticmethod
+    def _format_size(value: int) -> str:
+        size = float(max(0, int(value or 0)))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024
+        return f"{size:.1f} GB"
+
+    def set_progress(self, downloaded: int, total: int, name: str) -> None:
+        if total > 0:
+            percent = int(max(0, min(100, downloaded * 100 / total)))
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(percent)
+            size_text = f"{self._format_size(downloaded)} / {self._format_size(total)}"
+        else:
+            self.progress_bar.setRange(0, 0)
+            size_text = self._format_size(downloaded)
+        self.message_label.setText(f"{name}\n{size_text}")
+
+    def set_busy_message(self, message: str) -> None:
+        self.progress_bar.setRange(0, 0)
+        self.message_label.setText(message or "")
+
+    def mark_finishing(self) -> None:
+        self._closing_after_finish = True
+        self.cancel_button.setEnabled(False)
+        self.set_busy_message("下载完成，正在准备更新...")
+
+    def close_without_cancel(self, accepted: bool = False) -> None:
+        self._closing_after_finish = True
+        if accepted:
+            super().accept()
+        else:
+            super().reject()
+
+    def reject(self) -> None:
+        if self.cancel_button.isEnabled() and not self._closing_after_finish:
+            self.cancel_requested.emit()
+        super().reject()
+
+
+class UpdateCheckWorker(QObject):
+    finished = Signal(object, bool)
+    failed = Signal(str, bool)
+
+    def __init__(self, for_update: bool = False):
+        super().__init__()
+        self.for_update = bool(for_update)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(check_for_updates(), self.for_update)
+        except Exception as exc:
+            self.failed.emit(str(exc), self.for_update)
+
+
+class UpdateDownloadWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, asset: dict, cancel_event: threading.Event):
+        super().__init__()
+        self.asset = dict(asset or {})
+        self.cancel_event = cancel_event
+
+    def run(self) -> None:
+        try:
+            path = download_asset(
+                self.asset,
+                cancel_event=self.cancel_event,
+                progress_callback=lambda done, total, name: self.progress.emit(done, total, name),
+            )
+            self.finished.emit(str(path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     epg_loaded_signal = Signal(int, int)
     epg_load_error_signal = Signal(str)
@@ -219,6 +367,7 @@ class MainWindow(QMainWindow):
         self.discovered_epg_urls = []
         self.is_dirty = False
         self.current_m3u_url = None  # 记录当前加载的在线资源 URL
+        self._current_resource_context_path = ""
 
         self.httpd = None
         self.server_thread = None
@@ -242,6 +391,14 @@ class MainWindow(QMainWindow):
         self._fullscreen_cursor_hide_timer.setInterval(2500)
         self._fullscreen_cursor_hide_timer.timeout.connect(self._hide_fullscreen_cursor_if_idle)
         self._online_progress_dialog = None
+        self._update_check_thread = None
+        self._update_check_worker = None
+        self._update_download_thread = None
+        self._update_download_worker = None
+        self._update_download_dialog = None
+        self._update_cancel_event = None
+        self._pending_update_result = None
+        self._pending_update_asset = None
         self._epg_load_warning_shown = False
         self._playback_queue_context = {
             "kind": "",
@@ -366,10 +523,9 @@ class MainWindow(QMainWindow):
 
         # 导航覆盖层
         self.nav_overlay.open_directory_requested.connect(self.open_directory)
+        self.nav_overlay.open_file_requested.connect(self.open_resource_file)
         self.nav_overlay.open_url_requested.connect(self.open_m3u_url)
-        self.nav_overlay.refresh_requested.connect(
-            lambda: self.refresh_directory(self.playlist_mgr.channels_dir)
-        )
+        self.nav_overlay.refresh_requested.connect(self.refresh_current_resource)
         self.nav_overlay.file_selected.connect(self._on_file_selected)
         self.nav_overlay.delete_file_requested.connect(self.delete_channel_file)
         self.nav_overlay.resource_favorite_toggle_requested.connect(self._toggle_resource_favorite)
@@ -1545,7 +1701,229 @@ class MainWindow(QMainWindow):
     def show_about_dialog(self) -> None:
         """Show the application about dialog from the custom title icon."""
         dialog = AboutDialog(self)
+        dialog.check_update_requested.connect(self.check_for_updates_interactive)
+        dialog.online_update_requested.connect(self.start_online_update)
         dialog.exec()
+
+    def _open_releases_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(RELEASES_URL))
+
+    def _run_update_check(self, *, for_update: bool = False) -> None:
+        if self._update_check_thread is not None:
+            message_dialogs.information(self, "检查版本更新", "正在检查版本，请稍候。")
+            return
+        self.statusBar().showMessage("正在检查 GitHub 最新版本...")
+        thread = QThread(self)
+        worker = UpdateCheckWorker(for_update=for_update)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_check_finished)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_update_check_thread)
+        self._update_check_thread = thread
+        self._update_check_worker = worker
+        thread.start()
+
+    def _cleanup_update_check_thread(self) -> None:
+        thread = self._update_check_thread
+        self._update_check_thread = None
+        self._update_check_worker = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def check_for_updates_interactive(self) -> None:
+        """Check GitHub latest release and show the result."""
+        self._run_update_check(for_update=False)
+
+    def start_online_update(self) -> None:
+        """Check for updates, then download and launch the update package."""
+        self._run_update_check(for_update=True)
+
+    def _release_summary(self, body: str, limit: int = 480) -> str:
+        text = re.sub(r"\s+", " ", str(body or "")).strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + "..."
+
+    def _on_update_check_finished(self, result, for_update: bool) -> None:
+        self._pending_update_result = result
+        self.statusBar().showMessage(result.message, 5000)
+        release = getattr(result, "release", None)
+        if not getattr(result, "has_update", False):
+            message_dialogs.information(
+                self,
+                "检查版本更新",
+                f"{result.message}\n\n本地版本：{result.local_version}\n远端版本：{result.latest_version}",
+            )
+            return
+
+        summary = self._release_summary(getattr(release, "body", "") if release else "")
+        text = (
+            f"发现新版本。\n\n"
+            f"本地版本：{result.local_version}\n"
+            f"最新版本：{result.latest_version}\n\n"
+        )
+        if summary:
+            text += f"更新说明摘要：\n{summary}\n\n"
+        text += "是否立即下载并更新？"
+        if not for_update:
+            dialog = message_dialogs.create_message_box(self, "发现新版本", icon=QMessageBox.Information)
+            dialog.setText(text.replace("是否立即下载并更新？", "可点击“在线更新”下载并安装，或打开 Release 页面手动下载。"))
+            open_button = dialog.addButton("打开 Release 页面", QMessageBox.ActionRole)
+            dialog.addButton(QMessageBox.Ok)
+            dialog.exec()
+            if dialog.clickedButton() is open_button:
+                self._open_releases_page()
+            return
+        self._start_update_download_from_result(result)
+
+    def _on_update_check_failed(self, error: str, for_update: bool) -> None:
+        del for_update
+        self.statusBar().showMessage("检查版本更新失败", 5000)
+        dialog = message_dialogs.create_message_box(self, "检查版本更新失败", icon=QMessageBox.Warning)
+        dialog.setText(f"无法获取 GitHub 最新版本。\n\n{error}")
+        open_button = dialog.addButton("打开 Release 页面", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Ok)
+        dialog.exec()
+        if dialog.clickedButton() is open_button:
+            self._open_releases_page()
+
+    def _start_update_download_from_result(self, result) -> None:
+        distribution = detect_distribution_kind()
+        release = getattr(result, "release", None)
+        if release is None:
+            message_dialogs.warning(self, "在线更新", "没有可用的 Release 信息。")
+            return
+        if distribution == "source":
+            dialog = message_dialogs.create_message_box(self, "在线更新", icon=QMessageBox.Information)
+            dialog.setText("当前是源码开发模式，不执行自动覆盖更新。\n\n请到 GitHub Release 页面手动下载发布包。")
+            open_button = dialog.addButton("打开 Release 页面", QMessageBox.ActionRole)
+            dialog.addButton(QMessageBox.Ok)
+            dialog.exec()
+            if dialog.clickedButton() is open_button:
+                self._open_releases_page()
+            return
+
+        asset = select_update_asset(release, distribution)
+        if not asset:
+            dialog = message_dialogs.create_message_box(self, "在线更新", icon=QMessageBox.Warning)
+            dialog.setText("GitHub Release 中未找到适合当前系统的安装包或便携包。")
+            open_button = dialog.addButton("打开 Release 页面", QMessageBox.ActionRole)
+            dialog.addButton(QMessageBox.Ok)
+            dialog.exec()
+            if dialog.clickedButton() is open_button:
+                self._open_releases_page()
+            return
+
+        asset_name = str(asset.get("name") or "更新包")
+        reply = message_dialogs.question(
+            self,
+            "在线更新",
+            f"准备下载：{asset_name}\n\n下载完成并启动更新后，当前播放器将强制退出。\n是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._pending_update_asset = asset
+        self._download_update_asset(asset)
+
+    def _download_update_asset(self, asset: dict) -> None:
+        if self._update_download_thread is not None:
+            message_dialogs.information(self, "在线更新", "更新包正在下载，请稍候。")
+            return
+        self._update_cancel_event = threading.Event()
+        dialog = UpdateDownloadDialog(self)
+        dialog.cancel_requested.connect(self._cancel_update_download)
+        dialog.set_busy_message(f"正在连接：{asset.get('name') or '更新包'}")
+        self._update_download_dialog = dialog
+
+        thread = QThread(self)
+        worker = UpdateDownloadWorker(asset, self._update_cancel_event)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_update_download_thread)
+        self._update_download_thread = thread
+        self._update_download_worker = worker
+        thread.start()
+        dialog.exec()
+
+    def _cleanup_update_download_thread(self) -> None:
+        thread = self._update_download_thread
+        self._update_download_thread = None
+        self._update_download_worker = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _cancel_update_download(self) -> None:
+        if self._update_cancel_event is not None:
+            self._update_cancel_event.set()
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.set_busy_message("正在取消下载...")
+
+    def _on_update_download_progress(self, downloaded: int, total: int, name: str) -> None:
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.set_progress(downloaded, total, name)
+
+    def _on_update_download_finished(self, path: str) -> None:
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.mark_finishing()
+            self._update_download_dialog.close_without_cancel(accepted=True)
+            self._update_download_dialog = None
+        self.statusBar().showMessage(f"更新包已下载：{path}", 5000)
+        self._prompt_apply_update(path)
+
+    def _on_update_download_failed(self, error: str) -> None:
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.close_without_cancel(accepted=False)
+            self._update_download_dialog = None
+        error_text = str(error)
+        if "取消" in error_text or "cancel" in error_text.lower():
+            self.statusBar().showMessage("已取消更新下载", 3000)
+            return
+        message_dialogs.critical(self, "在线更新失败", f"下载更新包失败：\n{error}")
+
+    def _prompt_apply_update(self, package_path: str) -> None:
+        distribution = detect_distribution_kind()
+        package_lower = str(package_path).lower()
+        if package_lower.endswith(".zip"):
+            if not zip_contains_executable(package_path):
+                message_dialogs.critical(self, "在线更新失败", "便携更新包中没有找到可执行文件。")
+                return
+            action_text = "启动便携版覆盖更新"
+        else:
+            action_text = "启动安装程序"
+
+        reply = message_dialogs.question(
+            self,
+            "更新包已下载",
+            f"更新包已下载完成：\n{package_path}\n\n点击“是”将{action_text}，当前播放器会立即退出。\n是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            if package_lower.endswith(".zip") or distribution == "portable":
+                launch_portable_updater(package_path)
+            else:
+                launch_installer(package_path)
+        except Exception as exc:
+            message_dialogs.critical(self, "在线更新失败", f"启动更新程序失败：\n{exc}")
+            return
+        QApplication.quit()
 
     def nativeEvent(self, event_type, message):  # type: ignore[override]
         """Keep invisible resize borders after switching to a frameless title bar."""
@@ -1559,6 +1937,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"目录不存在：{dir_path}")
             return
 
+        self._current_resource_context_path = dir_path
         self._resource_scan_id += 1
         scan_id = self._resource_scan_id
         self.cfg_files_cache = []
@@ -1627,8 +2006,82 @@ class MainWindow(QMainWindow):
         )
         if selected_dir:
             self.playlist_mgr.channels_dir = selected_dir
+            self._current_resource_context_path = selected_dir
             self._show_navigation()
             self.refresh_directory(selected_dir)
+
+    def _resource_file_dialog_filter(self) -> str:
+        """Return QFileDialog filters for all supported resource files."""
+        channel_exts = " ".join(f"*{ext}" for ext in sorted(CHANNEL_RESOURCE_EXTENSIONS))
+        video_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_VIDEO_EXTENSIONS))
+        audio_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_AUDIO_EXTENSIONS))
+        image_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_IMAGE_EXTENSIONS))
+        gif_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_GIF_EXTENSIONS))
+        all_exts = " ".join(
+            f"*{ext}"
+            for ext in sorted(
+                CHANNEL_RESOURCE_EXTENSIONS
+                | LOCAL_VIDEO_EXTENSIONS
+                | LOCAL_AUDIO_EXTENSIONS
+                | LOCAL_IMAGE_EXTENSIONS
+                | LOCAL_GIF_EXTENSIONS
+            )
+        )
+        return (
+            f"所有支持的资源 ({all_exts});;"
+            f"频道文件 ({channel_exts});;"
+            f"视频文件 ({video_exts});;"
+            f"音频文件 ({audio_exts});;"
+            f"图片文件 ({image_exts});;"
+            f"GIF 文件 ({gif_exts});;"
+            "所有文件 (*)"
+        )
+
+    def open_resource_file(self):
+        """Open one supported channel or local media resource file."""
+        start_dir = self.playlist_mgr.channels_dir
+        if self._current_resource_context_path:
+            context = self._current_resource_context_path
+            start_dir = context if os.path.isdir(context) else os.path.dirname(context)
+        selected_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择资源文件",
+            start_dir,
+            self._resource_file_dialog_filter(),
+        )
+        if not selected_file:
+            return
+        if not is_resource_file(selected_file):
+            message_dialogs.warning(
+                self,
+                "无法打开资源",
+                f"暂不支持该资源类型：{os.path.basename(selected_file)}",
+            )
+            return
+        selected_file = os.path.abspath(selected_file)
+        selected_dir = os.path.dirname(selected_file)
+        self.playlist_mgr.channels_dir = selected_dir
+        self._show_navigation()
+        self.refresh_directory(selected_dir)
+        self._current_resource_context_path = selected_file
+        self._on_file_selected(selected_file)
+
+    def refresh_current_resource(self):
+        """Refresh the current resource file or directory context."""
+        context = self._current_resource_context_path or self.playlist_mgr.channels_dir
+        if context and not os.path.isdir(context):
+            if not os.path.isfile(context):
+                message_dialogs.warning(self, "刷新当前资源", f"资源文件已失效：{context}")
+                return
+            self.playlist_mgr.channels_dir = os.path.dirname(context)
+            self.refresh_directory(os.path.dirname(context))
+            self._current_resource_context_path = context
+            return
+        if context and os.path.isdir(context):
+            self.playlist_mgr.channels_dir = context
+            self.refresh_directory(context)
+            return
+        self.refresh_directory(self.playlist_mgr.channels_dir)
 
     def _on_settings_saved(
         self,
