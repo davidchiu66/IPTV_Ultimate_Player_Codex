@@ -82,6 +82,35 @@ def _is_explicit_http_media_url(url):
     )
 
 
+def _is_page_like_source_url(url):
+    """Return whether the URL looks like a player page instead of direct media."""
+    lower = str(url or "").strip().lower()
+    if not lower.startswith(("http://", "https://")):
+        return False
+    return not _is_explicit_http_media_url(lower)
+
+
+def _host_matches(url, *needles):
+    """Return whether the URL host contains any of the provided markers."""
+    try:
+        host = (urlparse(str(url or "").strip()).netloc or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(str(needle or "").strip().lower() in host for needle in needles if needle)
+
+
+def _clean_header_piece(value):
+    """Keep runtime HTTP headers single-line before handing them to mpv."""
+    return str(value or "").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _mpv_list_escape(value):
+    """Escape one item for mpv string-list properties such as http-header-fields."""
+    return _clean_header_piece(value).replace("\\", "\\\\").replace(",", "\\,")
+
+
 class ResolveChannelWorker(QObject):
     """Resolve a live channel in a worker thread."""
 
@@ -1092,6 +1121,34 @@ class MpvVideoWidget(QWidget):
         except Exception as exc:
             return {"snapshot_error": str(exc)}
 
+    def _latest_mpv_failure_hint(self):
+        try:
+            path = Path(_MPV_RUNTIME_LOG)
+            if not path.exists():
+                return ""
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 65536), 0)
+                text = handle.read().decode("utf-8", errors="replace")
+            hints = []
+            for line in text.splitlines():
+                if any(
+                    token in line
+                    for token in (
+                        "HTTP error",
+                        "Failed to open",
+                        "Opening failed",
+                        "finished playback, loading failed",
+                    )
+                ):
+                    hints.append(line.strip())
+            if not hints:
+                return ""
+            return hints[-1][-360:]
+        except Exception:
+            return ""
+
     def _set_loading_text(self, text):
         text = (text or "正在加载内容...").strip()
         if text == self._loading_text:
@@ -1116,6 +1173,10 @@ class MpvVideoWidget(QWidget):
         if self._failure_sent:
             return
         code_text = str(code)
+        detail_text = str(detail or "")
+        mpv_hint = self._latest_mpv_failure_hint()
+        if mpv_hint and mpv_hint not in detail_text:
+            detail_text = f"{detail_text}\nmpv: {mpv_hint}" if detail_text else f"mpv: {mpv_hint}"
         current_channel = self.current_channel or {}
         stream_format = self._detect_stream_format(current_channel.get("Manifest", ""), current_channel)
         if is_local_media_channel(current_channel):
@@ -1131,13 +1192,17 @@ class MpvVideoWidget(QWidget):
             {
                 "kind": "mpv",
                 "code": code_text,
-                "detail": detail,
+                "detail": detail_text,
                 "url": clean_media_url(current_channel.get("Manifest", "")),
                 "name": current_channel.get("Name", ""),
+                "playback_session_id": current_channel.get("_PlaybackSessionId"),
+                "trace_id": current_channel.get("_TraceId", ""),
                 "failure_stage": "mpv",
                 "failure_action": failure_action,
                 "resolved_info": current_channel.get("_ResolvedInfo", {}),
                 "source_url": clean_media_url(current_channel.get("_ResolvedSourceUrl") or current_channel.get("_OriginalManifest") or ""),
+                "playback_strategy": current_channel.get("_PlaybackStrategy", ""),
+                "proxy_disabled_for_playback": bool(current_channel.get("_DisableProxyForPlayback")),
             }
         )
 
@@ -1256,41 +1321,64 @@ class MpvVideoWidget(QWidget):
         referer = channel.get("Referer") or ""
         headers = channel.get("Headers") or {}
         stream_url = clean_media_url(channel.get("Manifest") or "")
+        playback_strategy = str(channel.get("_PlaybackStrategy") or "").lower()
+        source_hint = clean_media_url(channel.get("_ResolvedSourceUrl") or channel.get("_OriginalManifest") or "")
+        is_gdtv_like = (
+            "gdtv" in playback_strategy
+            or _host_matches(stream_url, "gdtv.cn", "itouchtv.cn")
+            or _host_matches(source_hint, "gdtv.cn", "itouchtv.cn")
+        )
         header_fields = []
         if user_agent:
-            header_fields.append(f"User-Agent: {user_agent}")
             self._set_player_property("user-agent", user_agent)
         else:
             self._set_player_property("user-agent", "")
+        if not referer and is_gdtv_like:
+            referer = "https://m.gdtv.cn/"
         if referer:
-            header_fields.append(f"Referer: {referer}")
             self._set_player_property("referrer", referer)
         else:
             self._set_player_property("referrer", "")
         if isinstance(headers, dict):
             for key, value in headers.items():
-                key_text = str(key).strip()
-                value_text = str(value).strip()
+                key_text = _clean_header_piece(key)
+                value_text = _clean_header_piece(value)
                 if not key_text or not value_text:
                     continue
-                if key_text.lower() in {"user-agent", "referer"}:
+                if key_text.lower() in {"user-agent", "referer", "referrer"}:
                     continue
                 header_fields.append(f"{key_text}: {value_text}")
         if _is_explicit_http_media_url(stream_url):
             existing = {field.split(":", 1)[0].strip().lower() for field in header_fields if ":" in field}
             browser_media_headers = {
                 "Accept": "*/*",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-Mode": "no-cors",
-                "Sec-Fetch-Dest": "video",
+                "Sec-Fetch-Site": "cross-site" if is_gdtv_like else "none",
+                "Sec-Fetch-Mode": "cors" if is_gdtv_like else "no-cors",
+                "Sec-Fetch-Dest": "empty" if is_gdtv_like else "video",
                 "Cache-Control": "no-cache",
             }
+            if is_gdtv_like:
+                page_origin = _url_origin(source_hint) or "https://www.gdtv.cn"
+                if "origin" not in existing and page_origin:
+                    header_fields.append(f"Origin: {page_origin}")
+                    existing.add("origin")
+                browser_media_headers["Accept-Language"] = "zh-CN,zh;q=0.9"
+                browser_media_headers["sec-ch-ua"] = '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"'
+                browser_media_headers["sec-ch-ua-mobile"] = "?0"
+                browser_media_headers["sec-ch-ua-platform"] = '"Windows"'
+                browser_media_headers["Sec-GPC"] = "1"
             for key, value in browser_media_headers.items():
                 if key.lower() not in existing:
                     header_fields.append(f"{key}: {value}")
-        self._set_player_property("http-header-fields", ",".join(header_fields) if header_fields else "")
+        self._set_player_property(
+            "http-header-fields",
+            ",".join(_mpv_list_escape(field) for field in header_fields) if header_fields else "",
+        )
 
-        proxy_value, _proxy_source = get_effective_proxy(channel)
+        if channel.get("_DisableProxyForPlayback"):
+            proxy_value = ""
+        else:
+            proxy_value, _proxy_source = get_effective_proxy(channel)
         self._set_player_property("http-proxy", proxy_value or "")
         self._set_player_property("http-seekable", "yes")
         self._set_player_property("tls-verify", "no")
@@ -1547,6 +1635,8 @@ class MpvVideoWidget(QWidget):
                     "detail": f"[{self._player_backend}] {exc}",
                     "url": channel.get("Manifest", ""),
                     "name": stream_name,
+                    "playback_session_id": channel.get("_PlaybackSessionId"),
+                    "trace_id": channel.get("_TraceId", ""),
                     "failure_stage": "mpv",
                     "failure_action": "browser-fallback",
                 }
@@ -1615,42 +1705,64 @@ class MpvVideoWidget(QWidget):
         resolved_type = str(resolved.get("media_type") or "").strip().lower()
         resolved_from = str(resolved.get("resolved_from") or "").strip().lower()
         source_page = clean_media_url(resolved.get("final_url") or channel.get("Manifest") or "")
+        original_manifest = clean_media_url(
+            channel.get("_OriginalManifest") or channel.get("Manifest") or ""
+        )
+        original_is_page_source = _is_page_like_source_url(original_manifest)
+        resolved_is_direct_media = _is_explicit_http_media_url(resolved_url)
+        needs_page_context = False
         if resolved_url:
             applied["Manifest"] = resolved_url
         if resolved_type == "dash":
             applied["ManifestType"] = "mpd"
         elif resolved_type:
             applied["ManifestType"] = resolved_type
-        if resolved_from in {"html", "script", "api", "redirect"}:
-            source_page = (
-                clean_media_url(channel.get("Manifest") or "")
-                if resolved_from == "redirect"
-                else source_page
-            )
-            applied["_OriginalManifest"] = clean_media_url(channel.get("Manifest") or "")
+        if resolved_from in {"html", "script", "api"}:
+            needs_page_context = True
+        elif resolved_from == "redirect":
+            needs_page_context = original_is_page_source or not resolved_is_direct_media
+            source_page = original_manifest or source_page
+        elif original_is_page_source and resolved_is_direct_media:
+            needs_page_context = True
+            source_page = original_manifest or source_page
+
+        if needs_page_context:
+            source_page = source_page or original_manifest
+            applied["_OriginalManifest"] = original_manifest
             applied["_ResolvedSourceUrl"] = source_page
-            resolved_is_direct_media = _is_explicit_http_media_url(applied.get("Manifest") or "")
-            if resolved_from == "redirect" and resolved_is_direct_media:
-                applied.pop("Referer", None)
-                headers = dict(applied.get("Headers") or {})
-                for key in list(headers.keys()):
-                    if str(key).strip().lower() in {"origin", "referer"}:
-                        headers.pop(key, None)
-                if headers:
-                    applied["Headers"] = headers
-                else:
-                    applied.pop("Headers", None)
-            elif source_page and not applied.get("Referer"):
-                applied["Referer"] = source_page
+            applied["_InteractivePageSource"] = True
+            referer = source_page
+            media_url = clean_media_url(applied.get("Manifest") or "")
+            if source_page and media_url:
+                page_origin = _url_origin(source_page)
+                media_origin = _url_origin(media_url)
+                if page_origin and media_origin and page_origin != media_origin:
+                    referer = f"{page_origin}/"
+            if referer and not applied.get("Referer"):
+                applied["Referer"] = referer
             if not applied.get("UserAgent"):
                 applied["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
             page_origin = _url_origin(source_page)
             media_origin = _url_origin(applied.get("Manifest") or "")
-            if not (resolved_from == "redirect" and resolved_is_direct_media) and page_origin and media_origin and page_origin != media_origin:
+            if page_origin and media_origin and page_origin != media_origin:
                 headers = dict(applied.get("Headers") or {})
                 headers.setdefault("Origin", page_origin)
                 headers.setdefault("Accept", "*/*")
                 applied["Headers"] = headers
+        elif resolved_from == "redirect" and resolved_is_direct_media:
+            applied.pop("Referer", None)
+            headers = dict(applied.get("Headers") or {})
+            for key in list(headers.keys()):
+                if str(key).strip().lower() in {"origin", "referer", "referrer"}:
+                    headers.pop(key, None)
+            if headers:
+                applied["Headers"] = headers
+            else:
+                applied.pop("Headers", None)
+        source_hint = clean_media_url(applied.get("_ResolvedSourceUrl") or applied.get("_OriginalManifest") or "")
+        media_hint = clean_media_url(applied.get("Manifest") or "")
+        if _host_matches(source_hint, "gdtv.cn", "itouchtv.cn") or _host_matches(media_hint, "itouchtv.cn"):
+            applied.setdefault("_PlaybackStrategy", "gdtv-probe-chain")
         applied["_ResolvedInfo"] = dict(resolved)
         return applied
 
@@ -1689,6 +1801,8 @@ class MpvVideoWidget(QWidget):
                 "detail": detail,
                 "url": clean_media_url(final_url),
                 "name": (channel or {}).get("Name", ""),
+                "playback_session_id": (channel or {}).get("_PlaybackSessionId"),
+                "trace_id": (channel or {}).get("_TraceId", ""),
                 "http_status": http_status,
                 "failure_stage": "resolve",
                 "failure_action": failure_action,
@@ -2475,6 +2589,8 @@ class MpvVideoWidget(QWidget):
                     "detail": f"[{self._player_backend}] {exc}",
                     "url": local_channel.get("Manifest", ""),
                     "name": stream_name,
+                    "playback_session_id": local_channel.get("_PlaybackSessionId"),
+                    "trace_id": local_channel.get("_TraceId", ""),
                     "failure_stage": "mpv",
                     "failure_action": "local-failed",
                 }
@@ -2953,7 +3069,9 @@ class PlayerPanel(QFrame):
 
     def mouseMoveEvent(self, event):
         if self._panel_interaction_mode != "click" and self._playback_active and not self._controls_suppressed:
-            self._show_controls()
+            host_pos = self.video_stack_host.mapFrom(self, event.position().toPoint())
+            if self._cursor_in_control_trigger_zone(host_pos):
+                self._show_controls()
         super().mouseMoveEvent(event)
 
     def showEvent(self, event):
@@ -2981,6 +3099,29 @@ class PlayerPanel(QFrame):
             bottom_height,
         )
 
+    def _cursor_in_control_trigger_zone(self, local_pos):
+        host = self.video_stack_host
+        if not host.rect().contains(local_pos):
+            return False
+
+        self._position_controls()
+
+        top_rect = self.top_bar.geometry()
+        bottom_rect = self.bottom_bar.geometry()
+        top_trigger_height = max(top_rect.height() + 8, 44)
+        bottom_trigger_height = max(host.height() - bottom_rect.top() + 8, 96)
+
+        top_trigger_rect = host.rect().adjusted(0, 0, 0, -(max(0, host.height() - top_trigger_height)))
+        bottom_trigger_rect = host.rect().adjusted(0, max(0, host.height() - bottom_trigger_height), 0, 0)
+
+        if self._controls_visible and (top_rect.contains(local_pos) or bottom_rect.contains(local_pos)):
+            return True
+        if top_trigger_rect.contains(local_pos):
+            return True
+        if bottom_trigger_rect.contains(local_pos):
+            return True
+        return False
+
     def _poll_cursor(self):
         if self._panel_interaction_mode == "click":
             return
@@ -2999,10 +3140,7 @@ class PlayerPanel(QFrame):
         moved = global_pos != self._last_cursor_pos
         self._last_cursor_pos = global_pos
 
-        over_bar = False
-        if self._controls_visible:
-            over_bar = self.top_bar.geometry().contains(local_pos) or self.bottom_bar.geometry().contains(local_pos)
-        if inside and (moved or over_bar):
+        if inside and (moved or self._controls_visible) and self._cursor_in_control_trigger_zone(local_pos):
             self._show_controls()
 
     def _show_controls(self):

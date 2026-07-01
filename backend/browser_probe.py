@@ -1,17 +1,23 @@
 import json
 import time
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QEventLoop, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QObject, QEventLoop, QTimer, QUrl, Signal
 
 from utils.url_cleaning import clean_media_url
 
 try:
-    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineUrlRequestInterceptor
+    from PySide6.QtWebEngineCore import (
+        QWebEngineHttpRequest,
+        QWebEnginePage,
+        QWebEngineUrlRequestInterceptor,
+    )
 
     WEBENGINE_AVAILABLE = True
     WEBENGINE_ERROR = ""
 except Exception as exc:  # pragma: no cover
+    QWebEngineHttpRequest = None
     QWebEnginePage = None
     QWebEngineUrlRequestInterceptor = object
     WEBENGINE_AVAILABLE = False
@@ -844,6 +850,8 @@ _SNAPSHOT_SCRIPT = r"""
         url: location.href,
         title: document.title || '',
         readyState: document.readyState || '',
+        cookie: document.cookie || '',
+        userAgent: navigator.userAgent || '',
         candidates: collectSources(),
         requests: collectRequests(),
         errors: collectErrors(),
@@ -852,6 +860,21 @@ _SNAPSHOT_SCRIPT = r"""
     });
 })();
 """
+
+
+def _host_from_url(url: str) -> str:
+    try:
+        return (urlparse(str(url or "").strip()).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _cookie_matches_host(cookie_domain: str, host: str) -> bool:
+    domain = str(cookie_domain or "").strip().lower().lstrip(".")
+    host = str(host or "").strip().lower()
+    if not domain or not host:
+        return False
+    return host == domain or host.endswith("." + domain)
 
 _ACTIVATE_MEDIA_SCRIPT = r"""
 (function() {
@@ -971,6 +994,7 @@ _STATIC_RESOURCE_TOKENS = (
     ".woff",
     ".woff2",
     ".ttf",
+    ".swf",
     ".map",
     "q_stat.php",
 )
@@ -983,6 +1007,16 @@ _PAGE_PATH_TOKENS = (
 )
 _POLL_INTERVAL_MS = 1000
 _DEFAULT_TIMEOUT_MS = 30000
+_DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
+
+
+def _is_gdtv_like_url(url: str) -> bool:
+    host = _host_from_url(url)
+    return any(token in host for token in ("gdtv.cn", "itouchtv.cn"))
 
 
 class _MediaRequestInterceptor(QWebEngineUrlRequestInterceptor):
@@ -996,6 +1030,14 @@ class _MediaRequestInterceptor(QWebEngineUrlRequestInterceptor):
             resource_type = int(info.resourceType())
         except Exception:
             return
+        try:
+            overrides = self.owner._request_header_overrides(url, resource_type)
+            for key, value in overrides.items():
+                key_bytes = QByteArray(str(key).encode("utf-8", errors="ignore"))
+                value_bytes = QByteArray(str(value).encode("utf-8", errors="ignore"))
+                info.setHttpHeader(key_bytes, value_bytes)
+        except Exception:
+            pass
         self.owner._register_network_request(url, resource_type)
 
 
@@ -1007,6 +1049,7 @@ class BrowserProbeSession(QObject):
         self._page = None
         self._profile = None
         self._interceptor = None
+        self._probe_channel: dict[str, Any] = {}
         self._candidates: list[str] = []
         self._requests: list[str] = []
         self._console_messages: list[str] = []
@@ -1017,6 +1060,122 @@ class BrowserProbeSession(QObject):
         self._best_candidate_seen_at = 0.0
         self._probe_started_at = 0.0
         self._timed_out = False
+        self._captured_cookies: list[dict[str, Any]] = []
+
+    def _request_header_overrides(self, url: str, resource_type: int = 0) -> dict[str, str]:
+        channel = self._probe_channel or {}
+        target_url = str(url or "").strip()
+        if not target_url:
+            return {}
+
+        user_agent = str(channel.get("UserAgent") or _DEFAULT_BROWSER_USER_AGENT).strip()
+        if not user_agent:
+            user_agent = _DEFAULT_BROWSER_USER_AGENT
+
+        overrides: dict[str, str] = {"User-Agent": user_agent}
+        source_url = str(channel.get("_ProbeEntryUrl") or channel.get("_OriginalManifest") or channel.get("Manifest") or "").strip()
+        is_gdtv = _is_gdtv_like_url(source_url) or _is_gdtv_like_url(target_url)
+        if is_gdtv:
+            overrides.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+            overrides.setdefault("sec-ch-ua", '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"')
+            overrides.setdefault("sec-ch-ua-mobile", "?0")
+            overrides.setdefault("sec-ch-ua-platform", '"Windows"')
+            overrides.setdefault("Sec-GPC", "1")
+
+            source_host = _host_from_url(source_url)
+            target_host = _host_from_url(target_url)
+            if target_host == "www.gdtv.cn" and "/tvChannelDetail/" in target_url:
+                overrides.setdefault("Referer", "https://m.gdtv.cn/")
+                overrides.setdefault("Sec-Fetch-Site", "same-site")
+                overrides.setdefault("Sec-Fetch-Mode", "navigate")
+                overrides.setdefault("Sec-Fetch-Dest", "document")
+                overrides.setdefault("Upgrade-Insecure-Requests", "1")
+                overrides.setdefault(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                )
+            elif "gdtv-api.gdtv.cn" in target_host or "tcdn-api.itouchtv.cn" in target_host:
+                overrides.setdefault("Referer", "https://www.gdtv.cn/")
+                overrides.setdefault("Origin", "https://www.gdtv.cn")
+                overrides.setdefault("Accept", "application/json, text/plain, */*")
+                overrides.setdefault("Sec-Fetch-Site", "cross-site" if "itouchtv.cn" in target_host else "same-site")
+                overrides.setdefault("Sec-Fetch-Mode", "cors")
+                overrides.setdefault("Sec-Fetch-Dest", "empty")
+
+            cookie_header = self._cookie_header_for_hosts(target_host, source_host, "www.gdtv.cn", "m.gdtv.cn", "gdtv.cn")
+            if cookie_header:
+                overrides["Cookie"] = cookie_header
+        return overrides
+
+    def _refresh_cookies_snapshot(self, timeout_ms: int = 350) -> None:
+        if self._profile is None:
+            return
+        try:
+            cookie_store = self._profile.cookieStore()
+        except Exception:
+            return
+        try:
+            if hasattr(cookie_store, "loadAllCookies"):
+                cookie_store.loadAllCookies()
+        except Exception:
+            return
+
+        loop = QEventLoop(self)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec()
+
+    def _capture_cookie(self, cookie):
+        try:
+            name = bytes(cookie.name()).decode("utf-8", errors="ignore")
+            value = bytes(cookie.value()).decode("utf-8", errors="ignore")
+            domain = str(cookie.domain() or "").strip()
+            path = str(cookie.path() or "").strip() or "/"
+            secure = bool(cookie.isSecure())
+            http_only = bool(cookie.isHttpOnly())
+        except Exception:
+            return
+        if not name:
+            return
+        payload = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path,
+            "secure": secure,
+            "http_only": http_only,
+        }
+        for index, existing in enumerate(self._captured_cookies):
+            if (
+                existing.get("name") == name
+                and existing.get("domain") == domain
+                and existing.get("path") == path
+            ):
+                self._captured_cookies[index] = payload
+                return
+        self._captured_cookies.append(payload)
+
+    def _cookie_header_for_hosts(self, *hosts: str) -> str:
+        host_list = [str(host or "").strip().lower() for host in hosts if str(host or "").strip()]
+        if not host_list:
+            return ""
+        pairs: list[str] = []
+        seen: set[str] = set()
+        for cookie in self._captured_cookies:
+            if not any(_cookie_matches_host(cookie.get("domain") or "", host) for host in host_list):
+                continue
+            name = str(cookie.get("name") or "").strip()
+            value = str(cookie.get("value") or "").strip()
+            if not name:
+                continue
+            pair = f"{name}={value}"
+            if pair in seen:
+                continue
+            seen.add(pair)
+            pairs.append(pair)
+        return "; ".join(pairs)
 
     def _register_candidate(self, url: str):
         clean = clean_media_url(url)
@@ -1130,6 +1289,35 @@ class BrowserProbeSession(QObject):
 
     def _merge_snapshot(self, data: dict[str, Any]):
         self._page_snapshot = data
+        try:
+            cookie_text = str(data.get("cookie") or "").strip()
+            page_url = str(data.get("url") or "").strip()
+            page_host = _host_from_url(page_url)
+            if cookie_text and page_host:
+                for pair_text in cookie_text.split(";"):
+                    name, sep, value = pair_text.strip().partition("=")
+                    if not sep or not name.strip():
+                        continue
+                    payload = {
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": page_host,
+                        "path": "/",
+                        "secure": page_url.lower().startswith("https://"),
+                        "http_only": False,
+                    }
+                    for index, existing in enumerate(self._captured_cookies):
+                        if (
+                            existing.get("name") == payload["name"]
+                            and existing.get("domain") == payload["domain"]
+                            and existing.get("path") == payload["path"]
+                        ):
+                            self._captured_cookies[index] = payload
+                            break
+                    else:
+                        self._captured_cookies.append(payload)
+        except Exception:
+            pass
         for item in data.get("requests") or []:
             if isinstance(item, str):
                 self._register_network_request(item, 0)
@@ -1225,8 +1413,16 @@ class BrowserProbeSession(QObject):
     def _best_result(self, elapsed_ms: int) -> dict[str, Any]:
         self._sort_candidates()
         playable_candidates = [item for item in self._candidates if self._is_playable_candidate(item)]
+        page_url = (self._page_snapshot or {}).get("url") or ""
+        page_host = _host_from_url(page_url)
+        entry_url = str((self._probe_channel or {}).get("_ProbeEntryUrl") or "").strip()
+        entry_host = _host_from_url(entry_url)
+        extra_hosts = []
+        if _is_gdtv_like_url(page_url) or _is_gdtv_like_url(entry_url):
+            extra_hosts.extend(["www.gdtv.cn", "m.gdtv.cn", "gdtv.cn"])
         if playable_candidates:
             first = playable_candidates[0]
+            media_host = _host_from_url(first)
             library_type = self._library_source_type(first)
             media_type = (
                 "dash"
@@ -1249,7 +1445,9 @@ class BrowserProbeSession(QObject):
                 "snapshot": dict(self._page_snapshot),
                 "elapsed_ms": elapsed_ms,
                 "timed_out": bool(self._timed_out),
-                "page_url": (self._page_snapshot or {}).get("url") or "",
+                "page_url": page_url,
+                "cookie_header": self._cookie_header_for_hosts(media_host, page_host, entry_host, *extra_hosts),
+                "cookies": list(self._captured_cookies),
             }
 
         detail = "browser probe timed out without capturing playable media"
@@ -1272,10 +1470,17 @@ class BrowserProbeSession(QObject):
             "snapshot": dict(self._page_snapshot),
             "elapsed_ms": elapsed_ms,
             "timed_out": bool(self._timed_out),
-            "page_url": (self._page_snapshot or {}).get("url") or "",
+            "page_url": page_url,
+            "cookie_header": self._cookie_header_for_hosts(page_host, entry_host, *extra_hosts),
+            "cookies": list(self._captured_cookies),
         }
 
-    def probe_channel(self, channel: dict[str, Any], timeout_ms: int = _DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+    def probe_channel(
+        self,
+        channel: dict[str, Any],
+        timeout_ms: int = _DEFAULT_TIMEOUT_MS,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         if not WEBENGINE_AVAILABLE:
             return {
                 "status": "error",
@@ -1283,13 +1488,33 @@ class BrowserProbeSession(QObject):
                 "candidates": [],
             }
 
+        def is_cancelled() -> bool:
+            if cancel_callback is None:
+                return False
+            try:
+                return bool(cancel_callback())
+            except Exception:
+                return False
+
+        if is_cancelled():
+            return {"status": "cancelled", "message": "browser probe cancelled", "candidates": []}
+
         manifest = str((channel or {}).get("Manifest") or "").strip()
         if not manifest:
             return {"status": "error", "message": "missing manifest url", "candidates": []}
 
         self.progress.emit("正在启动受控浏览器探测...")
+        self._probe_channel = dict(channel or {})
         self._page = QWebEnginePage(self)
         self._profile = self._page.profile()
+        try:
+            self._profile.setHttpUserAgent(str(self._probe_channel.get("UserAgent") or _DEFAULT_BROWSER_USER_AGENT))
+        except Exception:
+            pass
+        try:
+            self._profile.setHttpAcceptLanguage("zh-CN,zh;q=0.9")
+        except Exception:
+            pass
         self._interceptor = _MediaRequestInterceptor(self)
         self._profile.setUrlRequestInterceptor(self._interceptor)
         self._candidates = []
@@ -1302,6 +1527,15 @@ class BrowserProbeSession(QObject):
         self._best_candidate_seen_at = 0.0
         self._probe_started_at = time.monotonic()
         self._timed_out = False
+        self._captured_cookies = []
+
+        try:
+            cookie_store = self._profile.cookieStore()
+            cookie_store.cookieAdded.connect(self._capture_cookie)
+            if hasattr(cookie_store, "loadAllCookies"):
+                cookie_store.loadAllCookies()
+        except Exception:
+            pass
 
         original_console = self._page.javaScriptConsoleMessage
 
@@ -1334,6 +1568,15 @@ class BrowserProbeSession(QObject):
             loop.quit()
 
         timeout_timer.timeout.connect(on_timeout)
+
+        cancel_timer = QTimer(self)
+        cancel_timer.setInterval(150)
+
+        def on_cancelled():
+            if is_cancelled():
+                loop.quit()
+
+        cancel_timer.timeout.connect(on_cancelled)
 
         poll_timer = QTimer(self)
         poll_timer.setInterval(_POLL_INTERVAL_MS)
@@ -1374,14 +1617,29 @@ class BrowserProbeSession(QObject):
         self._page.loadFinished.connect(on_load_finished)
 
         timeout_timer.start(timeout_ms)
+        cancel_timer.start()
         self.progress.emit("正在加载页面并监听媒体请求...")
-        self._page.load(QUrl(manifest))
+        if QWebEngineHttpRequest is not None and _is_gdtv_like_url(manifest):
+            request = QWebEngineHttpRequest(QUrl(manifest))
+            for key, value in self._request_header_overrides(manifest).items():
+                try:
+                    request.setHeader(
+                        QByteArray(str(key).encode("utf-8", errors="ignore")),
+                        QByteArray(str(value).encode("utf-8", errors="ignore")),
+                    )
+                except Exception:
+                    pass
+            self._page.load(request)
+        else:
+            self._page.load(QUrl(manifest))
         loop.exec()
 
         poll_timer.stop()
         settle_timer.stop()
         timeout_timer.stop()
+        cancel_timer.stop()
         self._run_js_snapshot_sync()
+        self._refresh_cookies_snapshot()
 
         elapsed_ms = int((time.monotonic() - self._probe_started_at) * 1000)
 
@@ -1393,5 +1651,17 @@ class BrowserProbeSession(QObject):
             self._page.deleteLater()
         except Exception:
             pass
+
+        if is_cancelled():
+            return {
+                "status": "cancelled",
+                "message": "browser probe cancelled",
+                "candidates": list(self._candidates),
+                "requests": list(self._requests),
+                "console": list(self._console_messages[-30:]),
+                "elapsed_ms": elapsed_ms,
+                "timed_out": False,
+                "page_url": str((self._page_snapshot or {}).get("url") or manifest),
+            }
 
         return self._best_result(elapsed_ms)

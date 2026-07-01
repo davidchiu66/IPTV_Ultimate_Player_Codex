@@ -4,10 +4,12 @@ import copy
 import re
 import threading
 import time
+import traceback
 import webbrowser
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QEvent, QEventLoop, QPoint, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -133,6 +135,14 @@ def _url_origin(url):
 
 
 def _browser_like_referer(page_url, media_url):
+    page_text = str(page_url or "").strip().lower()
+    media_text = str(media_url or "").strip().lower()
+    if (
+        "gdtv.cn/tvchanneldetail/" in page_text
+        or "gdtv.cn/live/" in media_text
+        or "itouchtv.cn/live/" in media_text
+    ):
+        return "https://m.gdtv.cn/"
     page_origin = _url_origin(page_url)
     media_origin = _url_origin(media_url)
     if page_origin and media_origin and page_origin != media_origin:
@@ -157,11 +167,40 @@ def _looks_like_direct_media_url(url):
     return any(token in lower for token in direct_tokens)
 
 
+def _select_probe_manifest(channel):
+    """Prefer the original page source for browser probing when available."""
+    current = dict(channel or {})
+    source_candidates = [
+        current.get("_ResolvedSourceUrl"),
+        current.get("_OriginalManifest"),
+        current.get("Manifest"),
+    ]
+    for candidate in source_candidates:
+        url = clean_media_url(candidate or "")
+        if not url:
+            continue
+        parsed = urlparse(url)
+        if parsed.netloc.lower() == "m.gdtv.cn" and parsed.path.startswith("/tvChannelDetail/"):
+            url = f"{parsed.scheme or 'https'}://www.gdtv.cn{parsed.path}"
+            if parsed.query:
+                url = f"{url}?{parsed.query}"
+        if not _looks_like_direct_media_url(url):
+            return url
+    return clean_media_url(current.get("Manifest") or "")
+
+
 def _is_explicit_http_media_url(url):
     lower = str(url or "").strip().lower()
     return lower.startswith(("http://", "https://")) and any(
         token in lower for token in (".mp4", ".m4v", ".mov", ".flv", ".m3u8", ".mpd")
     )
+
+
+def _is_page_like_source_url(url):
+    lower = str(url or "").strip().lower()
+    if not lower.startswith(("http://", "https://")):
+        return False
+    return not _is_explicit_http_media_url(lower)
 
 
 class OnlineResourceProgressDialog(QDialog):
@@ -359,6 +398,7 @@ class MainWindow(QMainWindow):
     epg_download_success_signal = Signal(str, bool)
     epg_download_error_signal = Signal(str)
     resource_scan_finished_signal = Signal(int, str, list, str)
+    frontend_probe_request_signal = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -381,7 +421,11 @@ class MainWindow(QMainWindow):
         self._fallback_dialog_open = False
         self._browser_probe_running = False
         self._last_probe_failure_info = None
+        self._frontend_resolve_lock = threading.Lock()
+        self._active_frontend_resolve_session_id = ""
         self._current_trace_id = ""
+        self._playback_session_id = 0
+        self._active_browser_probe_session_id = 0
         self._resource_scan_id = 0
         self._resource_scan_threads = []
         self._last_adjacent_switch_at = 0.0
@@ -432,6 +476,7 @@ class MainWindow(QMainWindow):
         self.epg_download_success_signal.connect(self._on_epg_download_success)
         self.epg_download_error_signal.connect(self._on_epg_download_error)
         self.resource_scan_finished_signal.connect(self._on_resource_scan_finished)
+        self.frontend_probe_request_signal.connect(self._handle_frontend_probe_request)
 
         self.resize(self._safe_startup_size())
         self._build_ui()
@@ -2510,6 +2555,111 @@ class MainWindow(QMainWindow):
             "Cache-Control": "no-cache",
         }
 
+    def _looks_like_online_js_challenge(self, body_text="", content_type=""):
+        """Return whether a response looks like a JS cookie challenge page."""
+        sample = str(body_text or "").strip().lower()
+        lower_type = str(content_type or "").lower()
+        if not sample:
+            return False
+        if "html" not in lower_type and not sample.startswith(("<!doctype html", "<html")):
+            return False
+        markers = (
+            "__test=",
+            "slowaes.decrypt",
+            "aes.js",
+            "location.href=",
+            "requires javascript to work",
+        )
+        return all(marker in sample for marker in markers)
+
+    def _fetch_online_resource_via_webengine(self, url, timeout_ms=15000):
+        """Load an online resource in QWebEngine so JS redirects/cookies can settle."""
+        if not WEBENGINE_AVAILABLE:
+            raise RuntimeError(f"Qt WebEngine unavailable: {WEBENGINE_ERROR}")
+
+        from PySide6.QtWebEngineCore import QWebEnginePage
+
+        page = QWebEnginePage(self)
+        loop = QEventLoop(self)
+        timeout_timer = QTimer(self)
+        timeout_timer.setSingleShot(True)
+        settle_timer = QTimer(self)
+        settle_timer.setSingleShot(True)
+
+        result = {
+            "content_type": "",
+            "body_text": "",
+            "html_text": "",
+            "final_url": url,
+            "status_code": 200,
+        }
+        capture_started = {"value": False}
+
+        def quit_loop():
+            if loop.isRunning():
+                loop.quit()
+
+        def capture_page():
+            if capture_started["value"]:
+                return
+            capture_started["value"] = True
+            pending = {"count": 3}
+
+            def mark_done():
+                pending["count"] -= 1
+                if pending["count"] <= 0:
+                    quit_loop()
+
+            result["final_url"] = page.url().toString() or url
+
+            page.runJavaScript(
+                "document.contentType || ''",
+                lambda value: (
+                    result.__setitem__("content_type", str(value or "")),
+                    mark_done(),
+                ),
+            )
+            page.toPlainText(
+                lambda text: (
+                    result.__setitem__("body_text", str(text or "")),
+                    mark_done(),
+                ),
+            )
+            page.toHtml(
+                lambda html: (
+                    result.__setitem__("html_text", str(html or "")),
+                    mark_done(),
+                ),
+            )
+
+        def on_load_started():
+            capture_started["value"] = False
+            settle_timer.stop()
+
+        def on_load_finished(_ok):
+            settle_timer.stop()
+            settle_timer.start(900)
+
+        timeout_timer.timeout.connect(capture_page)
+        settle_timer.timeout.connect(capture_page)
+        page.loadStarted.connect(on_load_started)
+        page.loadFinished.connect(on_load_finished)
+
+        timeout_timer.start(max(3000, int(timeout_ms or 15000)))
+        page.load(QUrl(url))
+        loop.exec()
+
+        timeout_timer.stop()
+        settle_timer.stop()
+        try:
+            page.deleteLater()
+        except Exception:
+            pass
+
+        if not result.get("body_text") and result.get("html_text"):
+            result["body_text"] = re.sub(r"<[^>]+>", " ", result["html_text"])
+        return result
+
     def _show_online_resource_message(self, message, timeout=0, busy=False):
         """Show online-resource progress and flush the event loop once."""
         self.statusBar().showMessage(message, timeout)
@@ -2545,6 +2695,16 @@ class MainWindow(QMainWindow):
         )
         response.raise_for_status()
         response.encoding = response.apparent_encoding or response.encoding or "utf-8"
+        if self._looks_like_online_js_challenge(response.text, response.headers.get("Content-Type", "")):
+            resolved = self._fetch_online_resource_via_webengine(response.url or url)
+            resolved_text = str(resolved.get("body_text") or "")
+            resolved_type = str(resolved.get("content_type") or "text/plain")
+            return SimpleNamespace(
+                text=resolved_text,
+                headers={"Content-Type": resolved_type},
+                url=str(resolved.get("final_url") or response.url or url),
+                status_code=int(resolved.get("status_code") or response.status_code or 200),
+            )
         return response
 
     def _probe_online_resource(self, url):
@@ -2573,10 +2733,20 @@ class MainWindow(QMainWindow):
             text = body.decode(encoding, errors="replace")
         except Exception:
             text = body.decode("utf-8", errors="replace")
+        content_type = response.headers.get("Content-Type", "")
+        final_url = response.url or url
+        if self._looks_like_online_js_challenge(text, content_type):
+            resolved = self._fetch_online_resource_via_webengine(final_url or url)
+            return {
+                "content_type": str(resolved.get("content_type") or content_type),
+                "body_text": str(resolved.get("body_text") or ""),
+                "final_url": str(resolved.get("final_url") or final_url or url),
+                "status_code": int(resolved.get("status_code") or response.status_code or 200),
+            }
         return {
-            "content_type": response.headers.get("Content-Type", ""),
+            "content_type": content_type,
             "body_text": text,
-            "final_url": response.url or url,
+            "final_url": final_url,
             "status_code": response.status_code,
         }
 
@@ -2948,7 +3118,11 @@ class MainWindow(QMainWindow):
         existing_trace_id = channel.get("_TraceId")
         self._current_trace_id = str(existing_trace_id or new_trace_id())
         channel["_TraceId"] = self._current_trace_id
+        channel["_PlaybackSessionId"] = self._new_playback_session_id()
         self.current_channel = channel
+        self._browser_probe_running = False
+        self._active_browser_probe_session_id = 0
+        self._last_probe_failure_info = None
         self._apply_fullscreen_overlay_policy()
         log_event(
             "playback.start",
@@ -2970,6 +3144,16 @@ class MainWindow(QMainWindow):
         if channel:
             self.play_channel(channel)
 
+    def _new_playback_session_id(self):
+        self._playback_session_id += 1
+        return self._playback_session_id
+
+    def _current_playback_session_matches(self, session_id):
+        try:
+            return int(session_id or 0) == int(self._playback_session_id)
+        except Exception:
+            return False
+
     def _play_relative_channel(self, step):
         """按当前播放来源切换上/下一个项目（越界回绕）。"""
         self._play_adjacent_item(step)
@@ -2984,12 +3168,23 @@ class MainWindow(QMainWindow):
         channel = self.current_channel
         if not channel:
             return
+        channel = dict(channel)
+        channel["_PlaybackSessionId"] = self._new_playback_session_id()
+        channel["_TraceId"] = self._current_trace_id or str(channel.get("_TraceId") or new_trace_id())
+        self.current_channel = channel
+        self._browser_probe_running = False
+        self._active_browser_probe_session_id = 0
+        self._last_probe_failure_info = None
         try:
             self.player_panel.play_channel(channel, _reload=True)
         except TypeError:
             self.play_channel(channel)
 
     def stop_playback(self):
+        self._new_playback_session_id()
+        self._browser_probe_running = False
+        self._active_browser_probe_session_id = 0
+        self._last_probe_failure_info = None
         self.player_panel.stop_playback()
         self._apply_fullscreen_overlay_policy()
         self._schedule_edge_click_trigger_update()
@@ -3132,7 +3327,11 @@ class MainWindow(QMainWindow):
         trace_id = self._current_trace_id or str(retry_channel.get("_TraceId") or new_trace_id())
         self._current_trace_id = trace_id
         retry_channel["_TraceId"] = trace_id
+        retry_channel["_PlaybackSessionId"] = self._new_playback_session_id()
         self.current_channel = retry_channel
+        self._browser_probe_running = False
+        self._active_browser_probe_session_id = 0
+        self._last_probe_failure_info = None
         if self.detail_overlay.isVisible():
             self.detail_overlay.set_channel(retry_channel)
         log_event(
@@ -3158,8 +3357,71 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"回源重新解析失败：{exc}")
             return False
 
+    def _retry_with_alternate_playback_path(self, error_info):
+        """Try one additional playback path before showing the final fallback dialog."""
+        current = dict(self.current_channel or {})
+        if not current or not current.get("_BrowserProbeResult"):
+            return False
+        if current.get("_DisableProxyForPlayback") or current.get("_TriedDirectNoProxy"):
+            return False
+
+        effective_proxy, proxy_source = get_effective_proxy(current)
+        if not effective_proxy:
+            return False
+
+        source_url = clean_media_url(
+            error_info.get("source_url")
+            or current.get("_ResolvedSourceUrl")
+            or current.get("_OriginalManifest")
+            or ""
+        )
+        media_url = clean_media_url(error_info.get("url") or current.get("Manifest") or "")
+        strategy = str(current.get("_PlaybackStrategy") or "").lower()
+        source_lower = source_url.lower()
+        media_lower = media_url.lower()
+        should_try_direct = (
+            "gdtv" in strategy
+            or "gdtv.cn" in source_lower
+            or "itouchtv.cn" in source_lower
+            or "itouchtv.cn" in media_lower
+        )
+        if not should_try_direct:
+            return False
+
+        retry_channel = dict(current)
+        trace_id = self._current_trace_id or str(retry_channel.get("_TraceId") or new_trace_id())
+        self._current_trace_id = trace_id
+        retry_channel["_TraceId"] = trace_id
+        retry_channel["_DisableProxyForPlayback"] = True
+        retry_channel["_TriedDirectNoProxy"] = True
+        retry_channel["_PlaybackSessionId"] = self._new_playback_session_id()
+        self.current_channel = retry_channel
+        self._browser_probe_running = False
+        self._active_browser_probe_session_id = 0
+        self._last_probe_failure_info = None
+        if self.detail_overlay.isVisible():
+            self.detail_overlay.set_channel(retry_channel)
+        log_event(
+            "playback.retry_without_proxy",
+            "info",
+            trace_id=trace_id,
+            channel=retry_channel,
+            failed_url=media_url,
+            source_url=source_url,
+            proxy_source=proxy_source,
+        )
+        self.statusBar().showMessage("已解析到真实地址，正在尝试无代理直连播放...")
+        self.player_panel.play_channel(retry_channel, _reload=True)
+        return True
+
     def _on_playback_failed(self, error_info):
         error_info = dict(error_info or {})
+        session_id = error_info.get("playback_session_id")
+        if session_id is not None and not self._current_playback_session_matches(session_id):
+            return
+        current_session_id = (self.current_channel or {}).get("_PlaybackSessionId")
+        if current_session_id is not None:
+            error_info.setdefault("playback_session_id", current_session_id)
         error_info.setdefault("trace_id", self._current_trace_id)
         kind = error_info.get("kind", "unknown")
         code = error_info.get("code", "")
@@ -3169,6 +3431,14 @@ class MainWindow(QMainWindow):
         http_status = error_info.get("http_status")
         failure_action = error_info.get("failure_action", "")
         format_name = self._detect_stream_format_for_ui(self.current_channel or {}, url)
+        interactive_page_source = bool((self.current_channel or {}).get("_InteractivePageSource"))
+        browser_probe_already_applied = bool((self.current_channel or {}).get("_BrowserProbeResult"))
+        source_url = str(error_info.get("source_url") or "").strip().lower()
+        if not interactive_page_source and source_url:
+            interactive_page_source = (
+                source_url.startswith(("http://", "https://"))
+                and not _looks_like_direct_media_url(source_url)
+            )
         log_event(
             "playback.failed",
             "error",
@@ -3180,13 +3450,18 @@ class MainWindow(QMainWindow):
         self.player_panel.set_loading(False)
         if self._retry_expired_resolved_media(error_info):
             return
+        if self._retry_with_alternate_playback_path(error_info):
+            return
 
         direct_media_failure = _looks_like_direct_media_url(url)
         should_probe = (
             code == "need-js-probe"
+            or (code == "idle-active" and interactive_page_source)
             or (code == "idle-active" and not direct_media_failure)
             or (failure_action == "browser-probe" and not direct_media_failure)
         )
+        if browser_probe_already_applied:
+            should_probe = False
         if should_probe and not self._browser_probe_running:
             if self._try_browser_probe():
                 return
@@ -3203,6 +3478,25 @@ class MainWindow(QMainWindow):
                     "probe_result": probe_failure.get("result", {}),
                 }
             )
+        elif browser_probe_already_applied and code == "idle-active":
+            probe_result = (self.current_channel or {}).get("_BrowserProbeResult") or {}
+            mpv_detail = detail or "Browser probe resolved a media URL, but libmpv still failed to open it."
+            http_match = re.search(r"HTTP error\s+(\d{3})", str(mpv_detail))
+            error_info.update(
+                {
+                    "code": "loadfile",
+                    "detail": mpv_detail,
+                    "failure_stage": "mpv",
+                    "failure_action": "browser-probe",
+                    "probe_result": probe_result,
+                }
+            )
+            if http_match and not error_info.get("http_status"):
+                error_info["http_status"] = int(http_match.group(1))
+            code = error_info["code"]
+            detail = error_info["detail"]
+            http_status = error_info.get("http_status")
+            failure_action = error_info["failure_action"]
 
         if self._fallback_dialog_open:
             return
@@ -3230,7 +3524,7 @@ class MainWindow(QMainWindow):
             if failure_action == "next-channel":
                 self._show_next_channel_dialog(name, format_name, code, detail, http_status, error_info)
                 return
-            if code in {"probe-timeout", "probe-failed"} or failure_action == "browser-probe":
+            if code in {"probe-timeout", "probe-failed", "probe-exception", "probe-unavailable"} or failure_action == "browser-probe":
                 self._show_probe_retry_dialog(name, format_name, kind, code, detail, error_info)
                 return
             failure = classify_failure(error_info)
@@ -3266,28 +3560,53 @@ class MainWindow(QMainWindow):
         if not channel:
             return False
         if not WEBENGINE_AVAILABLE:
+            self._last_probe_failure_info = {
+                "code": "probe-unavailable",
+                "detail": f"Qt WebEngine unavailable: {WEBENGINE_ERROR}",
+                "result": {
+                    "status": "error",
+                    "message": f"Qt WebEngine unavailable: {WEBENGINE_ERROR}",
+                    "probe_manifest": _select_probe_manifest(channel or {}),
+                },
+            }
             self.statusBar().showMessage(f"页面探测不可用：{WEBENGINE_ERROR}")
             return False
 
         timeout_ms = get_browser_probe_timeout_ms()
+        session_id = (channel or {}).get("_PlaybackSessionId")
+        probe_channel = dict(channel or {})
+        probe_channel["_ProbeEntryUrl"] = str(probe_channel.get("Manifest") or "").strip()
+        probe_manifest = _select_probe_manifest(probe_channel)
+        if probe_manifest:
+            probe_channel["Manifest"] = probe_manifest
         self._browser_probe_running = True
+        self._active_browser_probe_session_id = int(session_id or 0)
         self._last_probe_failure_info = None
         self.player_panel.set_loading(True)
         self.player_panel.loading_label.setText("正在使用受控浏览器探测真实播放地址...")
-        trace_id = self._current_trace_id or str(channel.get("_TraceId") or new_trace_id())
+        trace_id = self._current_trace_id or str(probe_channel.get("_TraceId") or new_trace_id())
         self._current_trace_id = trace_id
-        channel["_TraceId"] = trace_id
+        probe_channel["_TraceId"] = trace_id
         log_event(
             "browser_probe.start",
             "info",
             trace_id=trace_id,
-            channel=channel,
+            channel=probe_channel,
+            probe_manifest=probe_manifest,
             timeout_ms=timeout_ms,
         )
         try:
             probe = BrowserProbeSession(self)
-            probe.progress.connect(self.player_panel.loading_label.setText)
-            result = probe.probe_channel(channel, timeout_ms=timeout_ms)
+
+            def handle_probe_progress(text):
+                if session_id is not None and not self._current_playback_session_matches(session_id):
+                    return
+                self.player_panel.loading_label.setText(text)
+
+            probe.progress.connect(handle_probe_progress)
+            result = probe.probe_channel(probe_channel, timeout_ms=timeout_ms)
+            if session_id is not None and not self._current_playback_session_matches(session_id):
+                return False
             if result.get("status") != "ok":
                 failure_code = "probe-timeout" if result.get("timed_out") else "probe-failed"
                 failure_detail = result.get("message") or "browser probe did not resolve a playable media url"
@@ -3307,7 +3626,7 @@ class MainWindow(QMainWindow):
                     "browser_probe.failed",
                     "error",
                     trace_id=trace_id,
-                    channel=channel,
+                    channel=probe_channel,
                     code=failure_code,
                     detail=failure_detail,
                     details=details,
@@ -3318,6 +3637,8 @@ class MainWindow(QMainWindow):
 
             patched_channel = dict(channel)
             patched_channel["_TraceId"] = trace_id
+            if session_id is not None:
+                patched_channel["_PlaybackSessionId"] = session_id
             patched_channel["Manifest"] = clean_media_url(result.get("media_url") or channel.get("Manifest") or "")
             media_type = str(result.get("media_type") or "").strip().lower()
             if media_type == "dash":
@@ -3327,14 +3648,15 @@ class MainWindow(QMainWindow):
             page_url = (
                 result.get("page_url")
                 or (result.get("snapshot") or {}).get("url")
-                or channel.get("Manifest")
+                or probe_channel.get("Manifest")
                 or ""
             )
             media_url = patched_channel.get("Manifest") or ""
             page_origin = _url_origin(page_url)
             if page_url:
-                patched_channel["_OriginalManifest"] = str(channel.get("Manifest") or "").strip()
+                patched_channel["_OriginalManifest"] = str(probe_channel.get("Manifest") or "").strip()
                 patched_channel["_ResolvedSourceUrl"] = page_url
+                patched_channel["_InteractivePageSource"] = True
             referer = _browser_like_referer(page_url, media_url)
             if referer and not patched_channel.get("Referer"):
                 patched_channel["Referer"] = referer
@@ -3344,9 +3666,33 @@ class MainWindow(QMainWindow):
             if page_origin and _url_origin(media_url) and page_origin != _url_origin(media_url):
                 headers.setdefault("Origin", page_origin)
                 headers.setdefault("Accept", "*/*")
+                headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+            cookie_header = str(result.get("cookie_header") or "").strip()
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            source_url_text = str(page_url or probe_channel.get("_ProbeEntryUrl") or "").lower()
+            media_url_text = str(media_url or "").lower()
+            if any(token in source_url_text for token in ("gdtv.cn/tvchanneldetail/", "m.gdtv.cn/tvchanneldetail/")) or any(
+                token in media_url_text for token in ("itouchtv.cn/live/", "gdtv.cn/live/")
+            ):
+                headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+                headers.setdefault(
+                    "sec-ch-ua",
+                    '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"',
+                )
+                headers.setdefault("sec-ch-ua-mobile", "?0")
+                headers.setdefault("sec-ch-ua-platform", '"Windows"')
+                headers.setdefault("Sec-GPC", "1")
+                patched_channel["Referer"] = "https://m.gdtv.cn/"
+                for header_key in list(headers.keys()):
+                    if str(header_key).strip().lower() in {"referer", "referrer", "origin", "cookie"}:
+                        headers.pop(header_key, None)
             if headers:
                 patched_channel["Headers"] = headers
+            else:
+                patched_channel.pop("Headers", None)
             patched_channel["_BrowserProbeResult"] = dict(result)
+            patched_channel["_PlaybackStrategy"] = patched_channel.get("_PlaybackStrategy") or "browser-probe-resolved"
 
             log_event(
                 "browser_probe.success",
@@ -3363,18 +3709,331 @@ class MainWindow(QMainWindow):
             self.play_channel(patched_channel)
             return True
         except Exception as exc:
+            probe_error = str(exc) or exc.__class__.__name__
+            probe_traceback = traceback.format_exc()
+            self._last_probe_failure_info = {
+                "code": "probe-exception",
+                "detail": probe_error,
+                "result": {
+                    "status": "error",
+                    "message": probe_error,
+                    "exception_type": exc.__class__.__name__,
+                    "traceback": probe_traceback,
+                    "probe_manifest": probe_manifest,
+                    "page_url": probe_channel.get("Manifest") or "",
+                },
+            }
             log_event(
                 "browser_probe.exception",
                 "error",
                 trace_id=trace_id,
-                channel=channel,
-                error=str(exc),
+                channel=probe_channel,
+                error=probe_error,
+                traceback=probe_traceback,
             )
             self.statusBar().showMessage(f"页面探测失败：{exc}")
             self.player_panel.set_loading(False)
             return False
         finally:
-            self._browser_probe_running = False
+            if int(self._active_browser_probe_session_id or 0) == int(session_id or 0):
+                self._active_browser_probe_session_id = 0
+                self._browser_probe_running = False
+
+    def _browser_probe_result_to_resolved(self, result):
+        result = dict(result or {})
+        media_type = str(result.get("media_type") or "unknown").strip().lower()
+        if media_type == "dash":
+            media_type = "mpd"
+        return {
+            "status": "ok" if result.get("status") == "ok" and result.get("media_url") else str(result.get("status") or "error"),
+            "media_url": clean_media_url(result.get("media_url") or ""),
+            "media_type": media_type or "unknown",
+            "http_status": result.get("http_status"),
+            "final_url": clean_media_url(result.get("media_url") or ""),
+            "message": result.get("message") or "resolved from browser probe",
+            "need_js_probe": False,
+            "resolved_from": "browser-probe",
+            "page_url": result.get("page_url") or (result.get("snapshot") or {}).get("url") or "",
+            "candidates": result.get("playable_candidates") or result.get("candidates") or [],
+        }
+
+    def _apply_browser_probe_result_to_channel(
+        self,
+        channel,
+        probe_channel,
+        result,
+        trace_id,
+        session_id=None,
+        force_local_proxy=False,
+    ):
+        patched_channel = dict(channel or {})
+        patched_channel["_TraceId"] = trace_id
+        if session_id is not None:
+            patched_channel["_PlaybackSessionId"] = session_id
+        patched_channel["Manifest"] = clean_media_url(result.get("media_url") or patched_channel.get("Manifest") or "")
+        media_type = str(result.get("media_type") or "").strip().lower()
+        if media_type == "dash":
+            patched_channel["ManifestType"] = "mpd"
+        elif media_type:
+            patched_channel["ManifestType"] = media_type
+
+        page_url = (
+            result.get("page_url")
+            or (result.get("snapshot") or {}).get("url")
+            or probe_channel.get("Manifest")
+            or ""
+        )
+        media_url = patched_channel.get("Manifest") or ""
+        page_origin = _url_origin(page_url)
+        media_origin = _url_origin(media_url)
+        if page_url:
+            patched_channel["_OriginalManifest"] = str(probe_channel.get("Manifest") or "").strip()
+            patched_channel["_ResolvedSourceUrl"] = page_url
+            patched_channel["_InteractivePageSource"] = True
+        referer = _browser_like_referer(page_url, media_url)
+        if referer and not patched_channel.get("Referer"):
+            patched_channel["Referer"] = referer
+        if not patched_channel.get("UserAgent"):
+            patched_channel["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
+
+        headers = dict(patched_channel.get("Headers") or {})
+        if page_origin and media_origin and page_origin != media_origin:
+            headers.setdefault("Origin", page_origin)
+            headers.setdefault("Accept", "*/*")
+            headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+        cookie_header = str(result.get("cookie_header") or "").strip()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        source_url_text = str(page_url or probe_channel.get("_ProbeEntryUrl") or "").lower()
+        media_url_text = str(media_url or "").lower()
+        if any(token in source_url_text for token in ("gdtv.cn/tvchanneldetail/", "m.gdtv.cn/tvchanneldetail/")) or any(
+            token in media_url_text for token in ("itouchtv.cn/live/", "gdtv.cn/live/")
+        ):
+            headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+            headers.setdefault(
+                "sec-ch-ua",
+                '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"',
+            )
+            headers.setdefault("sec-ch-ua-mobile", "?0")
+            headers.setdefault("sec-ch-ua-platform", '"Windows"')
+            headers.setdefault("Sec-GPC", "1")
+            patched_channel["Referer"] = "https://m.gdtv.cn/"
+            for header_key in list(headers.keys()):
+                if str(header_key).strip().lower() in {"referer", "referrer", "origin", "cookie"}:
+                    headers.pop(header_key, None)
+        if headers:
+            patched_channel["Headers"] = headers
+        else:
+            patched_channel.pop("Headers", None)
+        if force_local_proxy and media_url.startswith(("http://", "https://")):
+            patched_channel["UseLocalProxy"] = True
+        patched_channel["_BrowserProbeResult"] = dict(result)
+        patched_channel["_PlaybackStrategy"] = patched_channel.get("_PlaybackStrategy") or "browser-probe-resolved"
+        return patched_channel
+
+    def _mark_frontend_resolve_session(self, session_id):
+        session_text = str(session_id or "")
+        if not session_text:
+            return ""
+        with self._frontend_resolve_lock:
+            self._active_frontend_resolve_session_id = session_text
+        return session_text
+
+    def _is_frontend_resolve_cancelled(self, session_id):
+        session_text = str(session_id or "")
+        if not session_text:
+            return False
+        with self._frontend_resolve_lock:
+            return self._active_frontend_resolve_session_id != session_text
+
+    def _handle_frontend_probe_request(self, request):
+        try:
+            request["result"] = self._probe_frontend_channel_impl(
+                request.get("channel") or {},
+                int(request.get("index") or 0),
+                str(request.get("trace_id") or ""),
+                request.get("timeout_ms"),
+                request.get("cancel_callback"),
+            )
+        except Exception as exc:
+            request["result"] = {
+                "ok": False,
+                "status": "probe-exception",
+                "message": str(exc) or exc.__class__.__name__,
+                "needJsProbe": True,
+            }
+        finally:
+            done = request.get("done")
+            if done is not None:
+                done.set()
+
+    def _probe_frontend_channel(self, channel, index, trace_id, timeout_ms=None, cancel_callback=None):
+        timeout_ms = int(timeout_ms or get_browser_probe_timeout_ms())
+        in_gui_thread = QThread.currentThread() == self.thread() or threading.current_thread() is threading.main_thread()
+        if not in_gui_thread:
+            done = threading.Event()
+            request = {
+                "channel": dict(channel or {}),
+                "index": int(index),
+                "trace_id": str(trace_id or ""),
+                "timeout_ms": timeout_ms,
+                "cancel_callback": cancel_callback,
+                "done": done,
+                "result": None,
+            }
+            self.frontend_probe_request_signal.emit(request)
+            wait_seconds = max(10.0, (timeout_ms + 15000) / 1000.0)
+            if not done.wait(wait_seconds):
+                log_event(
+                    "browser_frontend_probe.dispatch_timeout",
+                    "error",
+                    trace_id=trace_id,
+                    channel=channel,
+                    timeout_ms=timeout_ms,
+                )
+                return {
+                    "ok": False,
+                    "status": "probe-timeout",
+                    "message": "browser probe dispatch timed out",
+                    "needJsProbe": True,
+                }
+            return request.get("result") or {
+                "ok": False,
+                "status": "probe-failed",
+                "message": "browser probe did not return a result",
+                "needJsProbe": True,
+            }
+        return self._probe_frontend_channel_impl(channel, index, trace_id, timeout_ms, cancel_callback)
+
+    def _probe_frontend_channel_impl(self, channel, index, trace_id, timeout_ms=None, cancel_callback=None):
+        if not WEBENGINE_AVAILABLE:
+            message = f"Qt WebEngine unavailable: {WEBENGINE_ERROR}"
+            log_event(
+                "browser_frontend_probe.unavailable",
+                "error",
+                trace_id=trace_id,
+                channel=channel,
+                error=message,
+            )
+            return {
+                "ok": False,
+                "status": "probe-unavailable",
+                "message": message,
+                "needJsProbe": True,
+                "channel": self._channel_to_frontend_payload(channel, source_index=index),
+            }
+
+        timeout_ms = int(timeout_ms or get_browser_probe_timeout_ms())
+        if cancel_callback is not None:
+            try:
+                if cancel_callback():
+                    return {
+                        "ok": False,
+                        "status": "cancelled",
+                        "message": "browser probe cancelled",
+                        "needJsProbe": True,
+                        "channel": self._channel_to_frontend_payload(channel, source_index=index),
+                    }
+            except Exception:
+                pass
+        probe_channel = dict(channel or {})
+        probe_channel["_ProbeEntryUrl"] = str(probe_channel.get("Manifest") or "").strip()
+        probe_manifest = _select_probe_manifest(probe_channel)
+        if probe_manifest:
+            probe_channel["Manifest"] = probe_manifest
+        trace_id = str(trace_id or probe_channel.get("_TraceId") or new_trace_id())
+        probe_channel["_TraceId"] = trace_id
+        log_event(
+            "browser_frontend_probe.start",
+            "info",
+            trace_id=trace_id,
+            channel=probe_channel,
+            probe_manifest=probe_manifest,
+            timeout_ms=timeout_ms,
+        )
+        try:
+            probe = BrowserProbeSession(self)
+            result = probe.probe_channel(probe_channel, timeout_ms=timeout_ms, cancel_callback=cancel_callback)
+        except Exception as exc:
+            probe_error = str(exc) or exc.__class__.__name__
+            log_event(
+                "browser_frontend_probe.exception",
+                "error",
+                trace_id=trace_id,
+                channel=probe_channel,
+                error=probe_error,
+                traceback=traceback.format_exc(),
+            )
+            return {
+                "ok": False,
+                "status": "probe-exception",
+                "message": probe_error,
+                "needJsProbe": True,
+                "channel": self._channel_to_frontend_payload(channel, source_index=index),
+            }
+
+        if cancel_callback is not None:
+            try:
+                if cancel_callback():
+                    return {
+                        "ok": False,
+                        "status": "cancelled",
+                        "message": "browser probe cancelled",
+                        "needJsProbe": True,
+                        "channel": self._channel_to_frontend_payload(channel, source_index=index),
+                        "probeResult": result,
+                    }
+            except Exception:
+                pass
+
+        if result.get("status") != "ok" or not result.get("media_url"):
+            failure_code = "probe-timeout" if result.get("timed_out") else "probe-failed"
+            failure_detail = result.get("message") or "browser probe did not resolve a playable media url"
+            log_event(
+                "browser_frontend_probe.failed",
+                "error",
+                trace_id=trace_id,
+                channel=probe_channel,
+                code=failure_code,
+                detail=failure_detail,
+                result=result,
+            )
+            return {
+                "ok": False,
+                "status": failure_code,
+                "message": failure_detail,
+                "needJsProbe": True,
+                "channel": self._channel_to_frontend_payload(channel, source_index=index),
+                "probeResult": result,
+            }
+
+        patched_channel = self._apply_browser_probe_result_to_channel(
+            channel,
+            probe_channel,
+            result,
+            trace_id,
+            force_local_proxy=True,
+        )
+        resolved = self._browser_probe_result_to_resolved(result)
+        log_event(
+            "browser_frontend_probe.success",
+            "info",
+            trace_id=trace_id,
+            channel=patched_channel,
+            media_url=patched_channel.get("Manifest", ""),
+            media_type=patched_channel.get("ManifestType", ""),
+            page_url=resolved.get("page_url", ""),
+            result=result,
+        )
+        return {
+            "ok": True,
+            "status": "ok",
+            "message": "resolved from browser probe",
+            "needJsProbe": False,
+            "channel": self._channel_to_frontend_payload(patched_channel, source_index=index),
+            "resolved": resolved,
+            "probeResult": result,
+        }
 
     def _detect_stream_format_for_ui(self, channel, url):
         manifest_type = str(channel.get("ManifestType") or "").strip().lower()
@@ -3750,6 +4409,9 @@ class MainWindow(QMainWindow):
             "defaultVideo": channel.get("DefaultVideo", ""),
             "defaultAudio": channel.get("DefaultAudio", ""),
             "defaultSubtitles": channel.get("DefaultSubtitles", ""),
+            "originalManifest": clean_media_url(channel.get("_OriginalManifest") or ""),
+            "resolvedSourceUrl": clean_media_url(channel.get("_ResolvedSourceUrl") or ""),
+            "interactivePageSource": bool(channel.get("_InteractivePageSource")),
         }
         if source_index is not None:
             payload["sourceIndex"] = int(source_index)
@@ -3770,28 +4432,30 @@ class MainWindow(QMainWindow):
         elif resolved_type:
             applied["ManifestType"] = resolved_type
 
-        if resolved_from in {"html", "script", "api", "redirect"}:
-            source_page = clean_media_url(
-                channel.get("Manifest") if resolved_from == "redirect" else (resolved or {}).get("final_url")
-            )
-            if not source_page:
-                source_page = clean_media_url(channel.get("Manifest") or "")
-            media_url = clean_media_url(applied.get("Manifest") or "")
-            applied["_OriginalManifest"] = clean_media_url(channel.get("Manifest") or "")
+        original_manifest = clean_media_url(
+            channel.get("_OriginalManifest") or channel.get("Manifest") or ""
+        )
+        original_is_page_source = _is_page_like_source_url(original_manifest)
+        media_url = clean_media_url(applied.get("Manifest") or "")
+        resolved_is_direct_media = _is_explicit_http_media_url(media_url)
+        needs_page_context = False
+        source_page = ""
+        if resolved_from in {"html", "script", "api"}:
+            needs_page_context = True
+        elif resolved_from == "redirect":
+            needs_page_context = original_is_page_source or not resolved_is_direct_media
+            source_page = original_manifest or clean_media_url(channel.get("Manifest") or "")
+        elif original_is_page_source and resolved_is_direct_media:
+            needs_page_context = True
+            source_page = original_manifest or clean_media_url((resolved or {}).get("final_url") or "")
+
+        if needs_page_context:
+            source_page = source_page or original_manifest
+            applied["_OriginalManifest"] = original_manifest
             applied["_ResolvedSourceUrl"] = source_page
+            applied["_InteractivePageSource"] = True
             referer = _browser_like_referer(source_page, media_url)
-            resolved_is_direct_media = resolved_from == "redirect" and _is_explicit_http_media_url(media_url)
-            if resolved_is_direct_media:
-                applied.pop("Referer", None)
-                headers = dict(applied.get("Headers") or {})
-                for key in list(headers.keys()):
-                    if str(key).strip().lower() in {"origin", "referer"}:
-                        headers.pop(key, None)
-                if headers:
-                    applied["Headers"] = headers
-                else:
-                    applied.pop("Headers", None)
-            elif referer and not applied.get("Referer"):
+            if referer and not applied.get("Referer"):
                 applied["Referer"] = referer
             if not applied.get("UserAgent"):
                 applied["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
@@ -3799,12 +4463,22 @@ class MainWindow(QMainWindow):
             page_origin = _url_origin(source_page)
             media_origin = _url_origin(media_url)
             headers = dict(applied.get("Headers") or {})
-            if not resolved_is_direct_media and page_origin and media_origin and page_origin != media_origin:
+            if page_origin and media_origin and page_origin != media_origin:
                 headers.setdefault("Origin", page_origin)
                 headers.setdefault("Accept", "*/*")
                 applied["UseLocalProxy"] = True
             if headers:
                 applied["Headers"] = headers
+        elif resolved_from == "redirect" and resolved_is_direct_media:
+            applied.pop("Referer", None)
+            headers = dict(applied.get("Headers") or {})
+            for key in list(headers.keys()):
+                if str(key).strip().lower() in {"origin", "referer", "referrer"}:
+                    headers.pop(key, None)
+            if headers:
+                applied["Headers"] = headers
+            else:
+                applied.pop("Headers", None)
 
         applied["_ResolvedInfo"] = dict(resolved or {})
         return applied
@@ -3824,8 +4498,13 @@ class MainWindow(QMainWindow):
         self._frontend_channels_cache = frontend_list
         return frontend_list
 
-    def resolve_frontend_channel(self, index, force=False):
+    def resolve_frontend_channel(self, index, force=False, probe=False, session_id=""):
         """按需解析一个原始频道，并返回浏览器播放器可直接合并的字段。"""
+        session_id = self._mark_frontend_resolve_session(session_id)
+
+        def is_cancelled():
+            return self._is_frontend_resolve_cancelled(session_id)
+
         streams = self.playlist_mgr.streams
         if index < 0 or index >= len(streams):
             return {
@@ -3861,9 +4540,76 @@ class MainWindow(QMainWindow):
                 },
             }
 
-        resolved = resolve_channel(channel, force=force)
+        if is_cancelled():
+            return {
+                "ok": False,
+                "status": "cancelled",
+                "message": "resolve cancelled",
+                "needJsProbe": False,
+                "channel": base_payload,
+            }
+
+        resolved = resolve_channel(channel, force=force, cancel_callback=is_cancelled if session_id else None)
         status = str(resolved.get("status") or "error")
+        if status == "cancelled" or is_cancelled():
+            return {
+                "ok": False,
+                "status": "cancelled",
+                "message": resolved.get("message") or "resolve cancelled",
+                "needJsProbe": False,
+                "channel": base_payload,
+                "resolved": resolved,
+            }
         ok = status == "ok" and bool(resolved.get("media_url"))
+        trace_id = str(channel.get("_TraceId") or new_trace_id())
+        resolved_from = str(resolved.get("resolved_from") or "").strip().lower()
+        resolved_media_url = clean_media_url(resolved.get("media_url") or "")
+        resolved_media_type = str(resolved.get("media_type") or "").strip().lower()
+        page_resolve_needs_probe = (
+            ok
+            and _is_page_like_source_url(manifest)
+            and resolved_from in {"html", "script", "api"}
+            and (
+                not _is_explicit_http_media_url(resolved_media_url)
+                or resolved_media_type in {"unknown", "image", "gif"}
+            )
+        )
+        should_probe = bool(probe) and status not in {"dead", "cancelled"} and (
+            page_resolve_needs_probe
+            or (
+                not ok
+                and (
+                    bool(resolved.get("need_js_probe"))
+                    or _is_page_like_source_url(manifest)
+                    or resolved_from in {"html", "script", "api"}
+                    or not resolved.get("media_url")
+                )
+            )
+        )
+        if should_probe:
+            probed = self._probe_frontend_channel(
+                channel,
+                index,
+                trace_id,
+                cancel_callback=is_cancelled if session_id else None,
+            )
+            if probed.get("ok"):
+                return probed
+            resolved = dict(resolved or {})
+            resolved["probe_result"] = probed.get("probeResult") or {}
+            payload = self._channel_to_frontend_payload(channel, source_index=index)
+            return {
+                "ok": False,
+                "status": probed.get("status") or status,
+                "message": probed.get("message") or resolved.get("message") or "",
+                "needJsProbe": True,
+                "httpStatus": resolved.get("http_status"),
+                "finalUrl": resolved.get("final_url") or "",
+                "channel": payload,
+                "resolved": resolved,
+                "probeAttempted": True,
+                "probeResult": probed.get("probeResult") or {},
+            }
         applied = self._apply_frontend_resolved_channel(channel, resolved) if ok else channel
         payload = self._channel_to_frontend_payload(applied, source_index=index)
 

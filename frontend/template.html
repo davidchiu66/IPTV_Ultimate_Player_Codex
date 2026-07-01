@@ -177,6 +177,10 @@
 
     <script>
         const channelsData = {{CHANNELS_JSON}};
+        const resolveCacheMs = 5 * 60 * 1000;
+        const resolveTimeoutMs = 25000;
+        const streamDetectTimeoutMs = 8000;
+        const hlsManifestTimeoutMs = 15000;
         
         let shakaPlayer = null, hlsPlayer = null, mpegtsPlayer = null; 
         let currentActiveChannel = null; 
@@ -184,7 +188,8 @@
         window.activePlayId = 0;
         let epgDataTimer = null, osdForceShowUntil = 0;
         let currentEpgProg = null, nextEpgProg = null;
-        let statusHideTimer = null, clockTimer = null; 
+        let statusHideTimer = null, clockTimer = null;
+        let resolveAbortController = null;
 
         function cleanMediaUrl(value) {
             let text = String(value || '').trim();
@@ -206,6 +211,34 @@
             return text;
         }
 
+        function isGdtvMediaUrl(url, channel) {
+            const target = String(url || '').toLowerCase();
+            const source = [
+                channel && channel.resolvedSourceUrl,
+                channel && channel.originalManifest,
+                channel && channel.referer,
+                channel && channel.mpd,
+            ].map(value => String(value || '').toLowerCase()).join(' ');
+            return target.includes('tcdn.itouchtv.cn/live/')
+                || target.includes('gdtv.cn/live/')
+                || source.includes('gdtv.cn/tvchanneldetail/')
+                || source.includes('m.gdtv.cn/');
+        }
+
+        function appendProxyContextParams(proxyUrl, mediaUrl, channel) {
+            if (!channel) return proxyUrl;
+            if (channel.userAgent) proxyUrl += '&ua=' + encodeURIComponent(channel.userAgent);
+            if (channel.referer) proxyUrl += '&ref=' + encodeURIComponent(channel.referer);
+            const skipSensitiveHeaders = isGdtvMediaUrl(mediaUrl, channel);
+            if (!skipSensitiveHeaders && channel.headers && channel.headers.Origin) {
+                proxyUrl += '&origin=' + encodeURIComponent(channel.headers.Origin);
+            }
+            if (!skipSensitiveHeaders && channel.headers && channel.headers.Cookie) {
+                proxyUrl += '&cookie=' + encodeURIComponent(channel.headers.Cookie);
+            }
+            return proxyUrl;
+        }
+
         class CustomPlaylistLoader extends Hls.DefaultConfig.loader {
             constructor(config) {
                 super(config);
@@ -223,6 +256,15 @@
                                 if (finalUrl) realUrl = cleanMediaUrl(finalUrl);
                                 let proxyErr = networkDetails.getResponseHeader('X-Proxy-Error-Status');
                                 if (proxyErr) {
+                                    if (retryFreshResolveAfterHlsFailure(currentActiveChannel, 'HLS proxy returned HTTP ' + proxyErr + '; refreshing stream URL')) {
+                                        return;
+                                    }
+                                    if (useIframeFallback(currentActiveChannel, 'HLS proxy returned HTTP ' + proxyErr + '; using iframe fallback')) {
+                                        return;
+                                    }
+                                    if (callbacks.onError) {
+                                        callbacks.onError({ code: Number(proxyErr), text: 'Proxy intercepted HTTP ' + proxyErr }, context, networkDetails, stats);
+                                    }
                                     showStatus(`❌ 播放中断: 目标源异常或被拦截 (HTTP ${proxyErr})`, true);
                                     return; 
                                 }
@@ -234,9 +276,7 @@
                                 const makeProxyUrl = (absUri) => {
                                     absUri = cleanMediaUrl(absUri);
                                     let pUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(absUri);
-                                    if (currentActiveChannel.userAgent) pUrl += '&ua=' + encodeURIComponent(currentActiveChannel.userAgent);
-                                    if (currentActiveChannel.referer) pUrl += '&ref=' + encodeURIComponent(currentActiveChannel.referer);
-                                    return pUrl;
+                                    return appendProxyContextParams(pUrl, absUri, currentActiveChannel);
                                 };
                                 for (let i = 0; i < lines.length; i++) {
                                     let line = lines[i].trim();
@@ -301,25 +341,22 @@
                 }
                 
                 let statusMsg = "";
-                if (httpStatus) statusMsg = `目标源拒绝访问或服务异常 (HTTP ${httpStatus})`;
-                else if (errCode === 1002) statusMsg = `服务器返回无效状态 (BAD_HTTP_STATUS)`;
-                else if (errCode === 1001) statusMsg = `网络连接断开或被源站拦截 (疑似 HTTP 403/503)`;
-                else if (errCode === 4000) statusMsg = `源内容解析失败 (疑似被重定向到了报错网页)`;
-                else if (errCode === 4032) statusMsg = `浏览器不支持该视频编码`;
-                // 【核心修复】：专门翻译 6001 DRM 缺失错误
-                else if (errCode === 6001 || errCode === 6002) statusMsg = `内嵌内核缺少 Widevine DRM 证书 (请点击左上方 🌐 图标在外部 Chrome 打开)`;
-                else if (errCode >= 6000 && errCode < 7000) statusMsg = `DRM 授权解密失败`;
-                else statusMsg = `核心遭遇异常`;
-                
-                showStatus(`❌ 播放中断: ${statusMsg} (错误码: ${errCode})`, true);
+                if (httpStatus) statusMsg = `Target stream returned HTTP ${httpStatus}`;
+                else if (errCode === 1002) statusMsg = "Server returned a bad HTTP status";
+                else if (errCode === 1001) statusMsg = "Network connection failed or was blocked";
+                else if (errCode === 4000) statusMsg = "Manifest/content parsing failed";
+                else if (errCode === 4032) statusMsg = "Browser does not support this codec";
+                else if (errCode === 6001 || errCode === 6002) statusMsg = "Widevine DRM is unavailable in this browser";
+                else if (errCode >= 6000 && errCode < 7000) statusMsg = "DRM license/decryption failed";
+                else statusMsg = "Playback engine error";
+
+                showStatus(`Playback interrupted: ${statusMsg} (code ${errCode})`, true);
             });
 
             shakaPlayer.getNetworkingEngine().registerRequestFilter(function(type, request) {
                 if (currentActiveChannel && currentActiveChannel.useProxy && !request.uris[0].includes('/proxy?url=')) {
                     let proxyUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(request.uris[0]);
-                    if (currentActiveChannel.userAgent) proxyUrl += '&ua=' + encodeURIComponent(currentActiveChannel.userAgent);
-                    if (currentActiveChannel.referer) proxyUrl += '&ref=' + encodeURIComponent(currentActiveChannel.referer);
-                    request.uris[0] = proxyUrl;
+                    request.uris[0] = appendProxyContextParams(proxyUrl, request.uris[0], currentActiveChannel);
                 }
             });
 
@@ -393,7 +430,7 @@
             }
         }
 
-        function showStatus(text, isError=false) {
+        function showStatus(text, isError=false, persistent=false) {
             const bar = document.getElementById('status-bar');
             bar.innerText = text;
             // 更新更符合现代 UI 的错误颜色表现
@@ -409,7 +446,8 @@
             
             bar.style.opacity = '1';
             if (statusHideTimer) clearTimeout(statusHideTimer);
-            if (!isError) statusHideTimer = setTimeout(() => { bar.style.opacity = '0'; }, 15000); // 正常提示15秒消隐
+            statusHideTimer = null;
+            if (!isError && !persistent) statusHideTimer = setTimeout(() => { bar.style.opacity = '0'; }, 15000);
         }
         
         function safePlay(videoElement, expectedPlayId) {
@@ -443,7 +481,7 @@
                 const sourceIndex = Number.isInteger(ch.sourceIndex) ? ch.sourceIndex : idx;
                 ch.originalIndex = idx;
                 ch.sourceIndex = sourceIndex;
-                const cat = ch.category || '未分组';
+                const cat = ch.category || 'Ungrouped';
                 if(!groups[cat]) groups[cat] = [];
                 groups[cat].push({...ch, originalIndex: idx, sourceIndex});
             });
@@ -522,7 +560,7 @@
                             if (activeEl) activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         }, 300);
                     } else {
-                        document.getElementById('epg-current').innerText = '当前时间段暂无节目数据';
+                        document.getElementById('epg-current').innerText = 'No programme data for this time slot';
                         document.getElementById('epg-next').innerText = '';
                     }
                 } else {
@@ -560,10 +598,31 @@
             const originalIndex = Number.isInteger(channel.originalIndex) ? channel.originalIndex : fallbackIndex;
             const sourceIndex = getChannelSourceIndex(channel, fallbackIndex);
             Object.assign(channel, resolvedChannel);
-            channel.mpd = cleanMediaUrl(channel.mpd);
+            channel.mpd = absolutizeMediaUrl(cleanMediaUrl(channel.mpd), channel);
             channel.originalIndex = originalIndex;
             channel.sourceIndex = Number.isInteger(Number(channel.sourceIndex)) ? Number(channel.sourceIndex) : sourceIndex;
             return channel;
+        }
+
+        function absolutizeMediaUrl(url, channel) {
+            const cleanUrl = cleanMediaUrl(url);
+            if (!cleanUrl) return '';
+            if (/^https?:\/\//i.test(cleanUrl) || cleanUrl.startsWith('data:') || cleanUrl.startsWith('blob:')) {
+                return cleanUrl;
+            }
+            const bases = [
+                channel && channel.resolvedSourceUrl,
+                channel && channel.originalManifest,
+                channel && channel._probePageUrl,
+            ];
+            for (const base of bases) {
+                const baseUrl = cleanMediaUrl(base);
+                if (!/^https?:\/\//i.test(baseUrl)) continue;
+                try {
+                    return new URL(cleanUrl, baseUrl).href;
+                } catch (e) {}
+            }
+            return cleanUrl;
         }
 
         function looksLikeDirectMediaChannel(channel) {
@@ -571,6 +630,45 @@
             const manifestType = String(channel && channel.manifestType || '').toLowerCase();
             if (['hls', 'm3u8', 'mpd', 'dash', 'flv', 'mp4', 'native'].includes(manifestType)) return true;
             return ['.m3u8', '.mpd', '.flv', '.mp4', '.mkv', '.avi', '.ts'].some(token => url.includes(token));
+        }
+
+        function looksLikeDirectMediaUrl(url) {
+            const lower = String(url || '').toLowerCase();
+            return ['.m3u8', '.mpd', '.flv', '.mp4', '.mkv', '.avi', '.ts', '.m4s'].some(token => lower.includes(token));
+        }
+
+        function looksLikeStaticAssetUrl(url) {
+            const lower = String(url || '').toLowerCase().split('?')[0];
+            return ['.js', '.css', '.json', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg', '.swf', '.woff', '.woff2'].some(token => lower.endsWith(token));
+        }
+
+        function pageSourceForChannel(channel) {
+            const candidates = [
+                channel && channel.resolvedSourceUrl,
+                channel && channel.originalManifest,
+                channel && channel.mpd,
+            ];
+            for (const value of candidates) {
+                const url = cleanMediaUrl(value);
+                const lower = String(url || '').toLowerCase();
+                if (lower.includes('/tvchanneldetail/') || lower.includes('/audiochanneldetail/') || lower.endsWith('.htm') || lower.endsWith('.html') || lower.includes('.php')) {
+                    return url;
+                }
+                if ((channel && channel.interactivePageSource) || (/^https?:\/\//i.test(url) && !looksLikeDirectMediaUrl(url) && !looksLikeStaticAssetUrl(url))) {
+                    return url;
+                }
+            }
+            return '';
+        }
+
+        function playbackUrlForChannel(channel) {
+            let targetUrl = cleanMediaUrl(channel && channel.mpd);
+            if (channel && channel.useProxy) {
+                const mediaUrl = cleanMediaUrl(channel.mpd);
+                targetUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(mediaUrl);
+                targetUrl = appendProxyContextParams(targetUrl, mediaUrl, channel);
+            }
+            return targetUrl;
         }
 
         function isClearlyUnavailableResolve(data, channel) {
@@ -581,18 +679,27 @@
             return [404, 410, 451].includes(httpStatus);
         }
 
-        async function resolveChannelForPlayback(channel, index, force = false) {
+        async function resolveChannelForPlayback(channel, index, force = false, playId = window.activePlayId) {
             if (!channel) return channel;
-            const resolveCacheMs = 5 * 60 * 1000;
             if (channel._resolverChecked && !force && (Date.now() - (channel._resolverCheckedAt || 0)) < resolveCacheMs) {
                 return channel;
             }
 
             const sourceIndex = getChannelSourceIndex(channel, index);
+            const sessionId = String(playId || window.activePlayId || Date.now());
+            if (resolveAbortController) {
+                try { resolveAbortController.abort(); } catch (e) {}
+            }
+            const controller = new AbortController();
+            resolveAbortController = controller;
+            const timeoutId = setTimeout(() => {
+                try { controller.abort(); } catch (e) {}
+            }, resolveTimeoutMs);
             try {
-                const url = `/api/resolve?index=${encodeURIComponent(sourceIndex)}${force ? '&force=1' : ''}`;
-                const res = await fetch(url, { cache: 'no-store' });
+                const url = `/api/resolve?index=${encodeURIComponent(sourceIndex)}&probe=1&session=${encodeURIComponent(sessionId)}${force ? '&force=1' : ''}`;
+                const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
                 const data = await res.json();
+                if (String(window.activePlayId) !== sessionId) return channel;
                 channel._resolverChecked = true;
                 channel._resolverCheckedAt = Date.now();
                 channel._resolveResult = data;
@@ -619,23 +726,39 @@
                     showStatus(`⚠️ 当前页面需要浏览器端嗅探，先按原地址尝试播放: ${channel.name}`, false);
                 } else {
                     channel._resolveStatus = 'fallback';
-                    const httpStatus = data && data.httpStatus ? `HTTP ${data.httpStatus}` : '未命中';
+                    const httpStatus = data && data.httpStatus ? ('HTTP ' + data.httpStatus) : 'unknown';
                     showStatus(`⚠️ 解析探测${httpStatus}，先按原地址尝试播放: ${channel.name}`, false);
                 }
             } catch (e) {
+                if (e && e.name === 'AbortError') {
+                    channel._resolveStatus = (String(window.activePlayId) === sessionId) ? 'timeout' : 'cancelled';
+                    if (String(window.activePlayId) === sessionId) {
+                        showStatus(`Resolve timed out; trying page fallback: ${channel.name}`, false);
+                    }
+                    return channel;
+                }
                 channel._resolverChecked = false;
                 channel._resolveStatus = 'api-error';
                 console.warn('统一解析接口调用失败，继续尝试原地址', e);
                 showStatus(`⚠️ 解析服务暂不可用，继续尝试原地址: ${channel.name}`, false);
+            } finally {
+                clearTimeout(timeoutId);
+                if (resolveAbortController === controller) {
+                    resolveAbortController = null;
+                }
             }
             return channel;
         }
 
         async function detectStreamType(channel) {
-            channel.mpd = cleanMediaUrl(channel.mpd);
+            channel.mpd = absolutizeMediaUrl(channel.mpd, channel);
             const originalUrl = String(channel.mpd || '').toLowerCase();
-            
-            if (originalUrl.includes('4gtv.tv') || originalUrl.includes('.htm') || originalUrl.includes('.php')) return 'iframe';
+            const manifestType = String(channel.manifestType || '').toLowerCase();
+
+            if (manifestType.includes('hls') || manifestType.includes('m3u8')) return 'hls';
+            if (manifestType.includes('dash') || manifestType.includes('mpd')) return 'mpd';
+            if (manifestType === 'flv') return 'flv';
+            if (manifestType === 'mp4' || manifestType === 'native') return 'native';
             if (originalUrl.includes('.mp4') || originalUrl.includes('.mkv') || originalUrl.includes('.avi') || originalUrl.includes('.ts')) return 'native';
             if (!channel.drmType || channel.drmType === 'none') {
                 if (originalUrl.includes('.mpd')) return 'mpd';
@@ -643,12 +766,22 @@
                 if (originalUrl.includes('.m3u8')) return 'hls';
             } else { return 'mpd'; }
 
+            if (originalUrl.includes('4gtv.tv') || originalUrl.includes('.htm') || originalUrl.includes('.php')) return 'iframe';
+            if (originalUrl.includes('/tvchanneldetail/') || originalUrl.includes('/audiochanneldetail/')) return 'iframe';
+            if (pageSourceForChannel(channel) && !looksLikeDirectMediaUrl(originalUrl)) return 'iframe';
+
             let fetchUrl = cleanMediaUrl(channel.mpd);
             if (channel.useProxy) {
-                fetchUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(cleanMediaUrl(channel.mpd));
+                const mediaUrl = cleanMediaUrl(channel.mpd);
+                fetchUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(mediaUrl);
+                fetchUrl = appendProxyContextParams(fetchUrl, mediaUrl, channel);
             }
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+                try { controller.abort(); } catch (e) {}
+            }, streamDetectTimeoutMs);
             try {
-                const response = await fetch(fetchUrl, { method: 'GET', headers: { 'Range': 'bytes=0-1023' } });
+                const response = await fetch(fetchUrl, { method: 'GET', headers: { 'Range': 'bytes=0-1023' }, signal: controller.signal });
                 const contentType = (response.headers.get('content-type') || '').toLowerCase();
                 
                 if (contentType.includes('text/html')) return 'iframe';
@@ -661,7 +794,11 @@
                 const view = new Uint8Array(buffer);
                 if (view.length >= 3 && view[0] === 0x46 && view[1] === 0x4C && view[2] === 0x56) return 'flv';
                 if (view.length >= 8 && view[4] === 0x66 && view[5] === 0x74 && view[6] === 0x79 && view[7] === 0x70) return 'native';
-            } catch (e) {}
+            } catch (e) {
+                if (pageSourceForChannel(channel)) return 'iframe';
+            } finally {
+                clearTimeout(timeoutId);
+            }
             return 'hls';
         }
 
@@ -681,25 +818,64 @@
             video.removeAttribute('src');
         }
 
+        function useIframeFallback(channel, reason) {
+            const iframeUrl = pageSourceForChannel(channel);
+            if (!iframeUrl) return false;
+            const video = document.getElementById('video');
+            const webviewContainer = document.getElementById('webview-container');
+            const webview = document.getElementById('webview');
+            try { if (hlsPlayer) hlsPlayer.destroy(); } catch (e) {}
+            hlsPlayer = null;
+            video.style.display = 'none';
+            webviewContainer.style.display = 'block';
+            webview.src = iframeUrl;
+            showStatus(`${reason}: ${channel.name}`, false);
+            return true;
+        }
+
+        function retryFreshResolveAfterHlsFailure(channel, reason) {
+            if (!channel || channel._hlsRefreshRetried) return false;
+            if (!pageSourceForChannel(channel)) return false;
+            channel._hlsRefreshRetried = true;
+            channel._resolverChecked = false;
+            channel._forcedDeepResolve = false;
+            channel._forceResolveOnce = true;
+            channel._hlsRefreshRetryInProgress = true;
+            try { if (hlsPlayer) hlsPlayer.destroy(); } catch (e) {}
+            hlsPlayer = null;
+            showStatus(`${reason}: ${channel.name}`, false);
+            playChannel(channel.originalIndex, document.querySelector('.channel-item.active'));
+            return true;
+        }
+
         async function playChannel(index, listItemElement) {
             document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
             if (listItemElement) listItemElement.classList.add('active');
 
             const channel = channelsData[index];
             if (!channel) {
-                showStatus('❌ 频道索引无效，无法播放', true);
+                showStatus('Invalid channel index; cannot play.', true);
                 return;
             }
             channel.originalIndex = Number.isInteger(channel.originalIndex) ? channel.originalIndex : index;
+            if (!channel._hlsRefreshRetryInProgress) {
+                channel._hlsRefreshRetried = false;
+                channel._forcedDeepResolve = false;
+            }
+            channel._hlsRefreshRetryInProgress = false;
+            if (resolveAbortController) {
+                try { resolveAbortController.abort(); } catch (e) {}
+                resolveAbortController = null;
+            }
             currentActiveChannel = channel; 
             const video = document.getElementById('video');
             const webviewContainer = document.getElementById('webview-container');
             const webview = document.getElementById('webview');
             
-            window.activePlayId = Date.now();
+            window.activePlayId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
             const myPlayId = window.activePlayId;
             
-            showStatus(`正在智能测源与嗅探装载: ${channel.name} ...`);
+            showStatus(`正在智能测源与嗅探装载: ${channel.name} ...`, false, true);
             osdForceShowUntil = Date.now() + 10000;
             document.getElementById('epg-current').innerText = '正在拉取实时节目单...';
             document.getElementById('epg-next').innerText = '';
@@ -711,27 +887,43 @@
             await robustTeardown();
             if (window.activePlayId !== myPlayId) return;
 
-            showStatus(`正在解析真实播放地址: ${channel.name} ...`);
-            await resolveChannelForPlayback(channel, index);
+            showStatus(`正在解析真实播放地址: ${channel.name} ...`, false, true);
+            const forceResolve = Boolean(channel._forceResolveOnce);
+            channel._forceResolveOnce = false;
+            await resolveChannelForPlayback(channel, index, forceResolve, myPlayId);
             if (window.activePlayId !== myPlayId) return;
             if (channel._resolveUnavailable) return;
 
-            channel.mpd = cleanMediaUrl(channel.mpd);
-            let targetUrl = channel.mpd;
-            if (channel.useProxy) {
-                targetUrl = window.location.origin + '/proxy?url=' + encodeURIComponent(cleanMediaUrl(channel.mpd));
-                if (channel.userAgent) targetUrl += '&ua=' + encodeURIComponent(channel.userAgent);
-                if (channel.referer) targetUrl += '&ref=' + encodeURIComponent(channel.referer);
-            }
+            channel.mpd = absolutizeMediaUrl(channel.mpd, channel);
+            let targetUrl = playbackUrlForChannel(channel);
 
-            const streamType = await detectStreamType(channel);
+            let streamType = await detectStreamType(channel);
             if (window.activePlayId !== myPlayId) return;
 
+            if (streamType === 'iframe' && !channel._forcedDeepResolve) {
+                channel._forcedDeepResolve = true;
+                showStatus(`正在重新嗅探真实播放地址: ${channel.name} ...`, false, true);
+                await resolveChannelForPlayback(channel, index, true, myPlayId);
+                if (window.activePlayId !== myPlayId) return;
+                if (channel._resolveUnavailable) return;
+                channel.mpd = absolutizeMediaUrl(channel.mpd, channel);
+                targetUrl = playbackUrlForChannel(channel);
+                streamType = await detectStreamType(channel);
+                if (window.activePlayId !== myPlayId) return;
+            }
+
             if (streamType === 'iframe') {
+                if (!useIframeFallback(channel, '未解析到可直接播放的媒体地址，使用网页容器兜底')) {
+                    showStatus(`未解析到可播放的媒体地址: ${channel.name}`, true);
+                }
+                return;
+                /*
+                const iframeUrl = pageSourceForChannel(channel) || channel.mpd;
                 video.style.display = 'none'; 
                 webviewContainer.style.display = 'block'; 
-                webview.src = channel.mpd; 
+                webview.src = iframeUrl;
                 showStatus(`▶ 正在通过 [网页容器嵌套] 展现: ${channel.name}`);
+                */
             }
             else if (streamType === 'native') {
                 video.onerror = function() {
@@ -747,6 +939,14 @@
                         if (video.error.code === 2) msg = '网络加载异常或CORS跨域拦截';
                         if (video.error.code === 3) msg = '解码失败';
                         if (video.error.code === 4) msg = '源站拒绝访问(403/530)';
+                        const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                        if (iframeUrl) {
+                            showStatus(`⚠️ 原生直通失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                            video.style.display = 'none';
+                            webviewContainer.style.display = 'block';
+                            webview.src = iframeUrl;
+                            return;
+                        }
                         showStatus(`❌ 播放中断: [原生直通] ${msg}`, true);
                     }
                 };
@@ -772,24 +972,61 @@
                                 playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
                                 return;
                             }
-                            if (status >= 400) showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true);
-                            else showStatus(`❌ 加载失败 (FLV异常: ${eType})`, true);
+                            if (status >= 400) {
+                                const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                                if (iframeUrl) {
+                                    showStatus(`⚠️ FLV 引擎失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                                    try { mpegtsPlayer.destroy(); } catch (e) {}
+                                    mpegtsPlayer = null;
+                                    video.style.display = 'none';
+                                    webviewContainer.style.display = 'block';
+                                    webview.src = iframeUrl;
+                                    return;
+                                }
+                                showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true);
+                            }
+                            else {
+                                const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                                if (iframeUrl) {
+                                    showStatus(`⚠️ FLV 引擎失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                                    try { mpegtsPlayer.destroy(); } catch (e) {}
+                                    mpegtsPlayer = null;
+                                    video.style.display = 'none';
+                                    webviewContainer.style.display = 'block';
+                                    webview.src = iframeUrl;
+                                    return;
+                                }
+                                showStatus(`❌ 加载失败 (FLV异常: ${eType})`, true);
+                            }
                         }
                     });
-                } else showStatus('❌ 当前浏览器不支持 FLV 硬解！', true);
+                } else showStatus('This browser does not support FLV playback.', true);
             } 
             else if (streamType === 'hls') {
                 if (Hls.isSupported()) {
                     hlsPlayer = new Hls({ enableWorker: true, lowLatencyMode: true, pLoader: CustomPlaylistLoader });
+                    let hlsManifestReady = false;
+                    const hlsStartTimer = setTimeout(() => {
+                        if (window.activePlayId !== myPlayId || hlsManifestReady) return;
+                        if (useIframeFallback(currentActiveChannel, 'HLS manifest timed out; using iframe fallback')) {
+                            return;
+                        }
+                        try { if (hlsPlayer) hlsPlayer.destroy(); } catch (e) {}
+                        hlsPlayer = null;
+                        showStatus(`HLS manifest timed out: ${channel.name}`, true);
+                    }, hlsManifestTimeoutMs);
                     hlsPlayer.loadSource(targetUrl);
                     hlsPlayer.attachMedia(video);
                     hlsPlayer.on(Hls.Events.MANIFEST_PARSED, function() {
+                        hlsManifestReady = true;
+                        clearTimeout(hlsStartTimer);
                         showStatus(`▶ 正在播放 [HLS 引擎]: ${channel.name}`);
                         safePlay(video, myPlayId);
                     });
                     hlsPlayer.on(Hls.Events.ERROR, function (event, data) {
                         if (window.activePlayId !== myPlayId) return;
                         if (data.fatal) {
+                            clearTimeout(hlsStartTimer);
                             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
                                 let status = (data.response && data.response.code) ? data.response.code : 0;
                                 let smartProxyEnabled = document.getElementById('smart-proxy-toggle') ? document.getElementById('smart-proxy-toggle').checked : false;
@@ -800,18 +1037,47 @@
                                     || smartProxyEnabled
                                 );
                                 if (shouldRetryWithProxy) {
-                                    const reason = status === 0 ? '浏览器直连疑似跨域或网络被拦截' : `HLS 网络错误 HTTP ${status}`;
+                                    const reason = status === 0 ? 'Browser direct playback was blocked or failed' : ('HLS network error HTTP ' + status);
                                     showStatus(`⚠️ ${reason}，自动切换本地代理重试...`, false);
                                     hlsPlayer.destroy();
                                     currentActiveChannel.useProxy = true;
                                     playChannel(currentActiveChannel.originalIndex, document.querySelector('.channel-item.active'));
                                     return;
                                 }
-                                if (status >= 400) { showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true); hlsPlayer.destroy(); return; }
+                                if (status === 0 && currentActiveChannel.useProxy) {
+                                    if (useIframeFallback(currentActiveChannel, 'HLS failed after proxy retry; using iframe fallback')) {
+                                        return;
+                                    }
+                                }
+                                if (status >= 400) {
+                                    const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                                    if (iframeUrl) {
+                                        showStatus(`⚠️ HLS 引擎失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                                        hlsPlayer.destroy();
+                                        hlsPlayer = null;
+                                        video.style.display = 'none';
+                                        webviewContainer.style.display = 'block';
+                                        webview.src = iframeUrl;
+                                        return;
+                                    }
+                                    showStatus(`❌ 播放中断: 目标源异常 (HTTP ${status})`, true); hlsPlayer.destroy(); return;
+                                }
                                 hlsPlayer.startLoad();
                             }
                             else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hlsPlayer.recoverMediaError(); }
-                            else { showStatus(`❌ 加载失败 (Hls.js)`, true); }
+                            else {
+                                const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                                if (iframeUrl) {
+                                    showStatus(`⚠️ HLS 引擎失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                                    try { hlsPlayer.destroy(); } catch (e) {}
+                                    hlsPlayer = null;
+                                    video.style.display = 'none';
+                                    webviewContainer.style.display = 'block';
+                                    webview.src = iframeUrl;
+                                    return;
+                                }
+                                showStatus(`❌ 加载失败 (Hls.js)`, true);
+                            }
                         }
                     });
                 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -851,7 +1117,17 @@
                     if (httpStatus) showStatus(`❌ 播放中断: 目标源拒绝访问或服务异常 (HTTP ${httpStatus})`, true);
                     else if (errCode === 1002) showStatus(`❌ 播放中断: 服务器返回无效状态 (BAD_HTTP_STATUS)`, true);
                     else if (errCode === 1001) showStatus(`❌ 播放中断: 网络连接断开或被源站拦截`, true);
-                    else showStatus(`❌ 加载失败 (Shaka 错误码: ${errCode})`, true);
+                    else {
+                        const iframeUrl = pageSourceForChannel(currentActiveChannel);
+                        if (iframeUrl) {
+                            showStatus(`⚠️ Shaka 引擎失败，自动回退网页容器: ${currentActiveChannel.name}`, false);
+                            video.style.display = 'none';
+                            webviewContainer.style.display = 'block';
+                            webview.src = iframeUrl;
+                            return;
+                        }
+                        showStatus(`❌ 加载失败 (Shaka 错误码: ${errCode})`, true);
+                    }
                 }
             }
         }

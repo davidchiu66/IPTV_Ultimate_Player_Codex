@@ -2,6 +2,7 @@ import json
 import re
 import ssl
 import time
+import base64
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -251,6 +252,38 @@ def _is_explicit_media_url(url: str) -> bool:
     return _guess_direct_media_type(url) != "unknown"
 
 
+def _is_obvious_static_asset_url(url: str) -> bool:
+    """Filter page assets that are often matched by broad player-url regexes."""
+    try:
+        parsed = urllib.parse.urlparse(str(url or "").strip())
+    except Exception:
+        return False
+    path = (parsed.path or "").lower()
+    if not path:
+        return False
+    static_exts = (
+        ".js",
+        ".mjs",
+        ".css",
+        ".map",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".swf",
+    )
+    return path.endswith(static_exts)
+
+
 def _direct_media_result(
     url: str,
     *,
@@ -365,6 +398,8 @@ def _extract_candidates_from_html(text: str, base_url: str = "") -> list[str]:
             if not value:
                 continue
             abs_value = _absolutize_candidate(base_url, value)
+            if _is_obvious_static_asset_url(abs_value):
+                continue
             lower = abs_value.lower()
             if (
                 lower.startswith("http://")
@@ -431,7 +466,9 @@ def _extract_candidates_from_inline_scripts(text: str, base_url: str = "") -> li
             value = match if isinstance(match, str) else ""
             if not value:
                 continue
-            candidates.append(_absolutize_candidate(base_url, value))
+            abs_value = _absolutize_candidate(base_url, value)
+            if not _is_obvious_static_asset_url(abs_value):
+                candidates.append(abs_value)
     return _dedupe_candidates(candidates)
 
 
@@ -449,8 +486,24 @@ def _extract_candidate_api_urls(text: str, base_url: str = "") -> list[str]:
             value = match if isinstance(match, str) else ""
             if not value:
                 continue
-            results.append(_absolutize_candidate(base_url, value))
+            abs_value = _absolutize_candidate(base_url, value)
+            if not _is_obvious_static_asset_url(abs_value):
+                results.append(abs_value)
     return _dedupe_candidates(results)
+
+
+def _extract_media_candidates_from_json_text(body_text: str, base_url: str = "") -> list[str]:
+    """Extract media URLs from a JSON payload or JSON-like text."""
+    if not body_text:
+        return []
+    candidates: list[str] = []
+    try:
+        data = json.loads(body_text)
+    except Exception:
+        data = None
+    if data is not None:
+        _walk_json_for_media(data, candidates, base_url)
+    return _dedupe_candidates(candidates)
 
 
 def _request_context(channel: dict[str, Any]) -> dict[str, Any]:
@@ -467,6 +520,33 @@ def _request_context(channel: dict[str, Any]) -> dict[str, Any]:
         "headers": headers,
         "proxy": proxy_value or "",
     }
+
+
+def _channel_with_request_context(
+    channel: dict[str, Any],
+    *,
+    manifest: str,
+    referer: str = "",
+    origin: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Return a channel clone with request context overrides."""
+    request_channel = dict(channel or {})
+    request_channel["Manifest"] = clean_media_url(manifest)
+    if referer:
+        request_channel["Referer"] = referer
+    if not request_channel.get("UserAgent"):
+        request_channel["UserAgent"] = DEFAULT_BROWSER_USER_AGENT
+    headers = dict(request_channel.get("Headers") or {})
+    if origin:
+        headers.setdefault("Origin", origin)
+    if extra_headers:
+        for key, value in extra_headers.items():
+            if key and value:
+                headers[str(key)] = str(value)
+    if headers:
+        request_channel["Headers"] = headers
+    return request_channel
 
 
 def _add_default_header(req: urllib.request.Request, existing_headers: dict[str, str], key: str, value: str) -> None:
@@ -616,6 +696,209 @@ def _perform_request(
         "body_text": body_text,
         "error": "",
     }
+
+
+def _request_json_candidates(
+    channel: dict[str, Any],
+    api_url: str,
+    *,
+    referer: str = "",
+    origin: str = "",
+    progress_callback: Callable[[str], None] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Fetch an API URL and extract candidate media URLs from its JSON response."""
+    _notify(progress_callback, f"正在尝试解析接口：{api_url}")
+    api_channel = _channel_with_request_context(
+        channel,
+        manifest=api_url,
+        referer=referer,
+        origin=origin,
+        extra_headers={"Accept": "application/json, text/plain, */*"},
+    )
+    info = _perform_request(api_channel, "GET", use_range=False)
+    body = info.get("body_text") or ""
+    candidates = _extract_media_candidates_from_json_text(body, api_url)
+    return info, candidates
+
+
+def _gdtv_channel_id_from_url(page_url: str) -> str:
+    match = re.search(r"/tvChannelDetail/(\d+)", urllib.parse.urlparse(page_url or "").path or "")
+    return match.group(1) if match else ""
+
+
+def _gdtv_is_channel_page(page_url: str) -> bool:
+    parsed = urllib.parse.urlparse(page_url or "")
+    return parsed.netloc.lower().endswith("gdtv.cn") and bool(_gdtv_channel_id_from_url(page_url))
+
+
+def _gdtv_node_variants(raw_node: str) -> list[str]:
+    """Generate likely node representations used by the GDTV channel API."""
+    raw = str(raw_node or "").strip()
+    if not raw:
+        return []
+    variants: list[str] = []
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in variants:
+            variants.append(text)
+
+    add(raw)
+    unquoted = urllib.parse.unquote(raw)
+    add(unquoted)
+    if raw.endswith("-1"):
+        add(raw[:-2])
+    if unquoted.endswith("-1"):
+        add(unquoted[:-2])
+
+    seed_values = list(variants)
+    for seed in seed_values:
+        add(base64.b64encode(seed.encode("utf-8")).decode("ascii"))
+        add(base64.b64encode(seed.encode("utf-8")).decode("ascii").rstrip("="))
+    return variants
+
+
+def _resolve_gdtv_via_api(
+    channel: dict[str, Any],
+    page_url: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve GDTV channel pages through their API chain before falling back to JS probe."""
+    if not _gdtv_is_channel_page(page_url):
+        return None
+
+    channel_id = _gdtv_channel_id_from_url(page_url)
+    parsed = urllib.parse.urlparse(page_url or "")
+    page_origin = f"{parsed.scheme or 'https'}://{parsed.netloc}" if parsed.netloc else "https://www.gdtv.cn"
+    page_referer = f"{page_origin}/"
+    channel_api_base = f"https://gdtv-api.gdtv.cn/api/tv/v2/tvChannel/{channel_id}?tvChannelPk={channel_id}"
+    attempts: list[str] = []
+    all_candidates: list[str] = []
+
+    if _is_cancelled(cancel_callback):
+        return _cancelled_result(page_url)
+
+    direct_candidates = [
+        channel_api_base,
+        f"{page_origin}/api/tv/v2/tvChannel/{channel_id}?tvChannelPk={channel_id}",
+    ]
+    for api_url in direct_candidates:
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(page_url)
+        info, candidates = _request_json_candidates(
+            channel,
+            api_url,
+            referer=page_referer,
+            origin=page_origin,
+            progress_callback=progress_callback,
+        )
+        attempts.append(api_url)
+        if candidates:
+            all_candidates.extend(candidates)
+            media_url = candidates[0]
+            return _make_result(
+                status="ok",
+                media_url=media_url,
+                media_type=_guess_media_type(media_url, "", b"") or "hls",
+                http_status=info.get("http_status"),
+                final_url=page_url,
+                message="resolved from gdtv api",
+                resolved_from="api",
+                candidates=_dedupe_candidates(all_candidates),
+            )
+
+    get_param_urls = [
+        "https://tcdn-api.itouchtv.cn/getParam",
+        f"{page_origin}/getParam",
+    ]
+    raw_nodes: list[str] = []
+    for get_param_url in get_param_urls:
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(page_url)
+        _notify(progress_callback, f"正在请求 GDTV 参数接口：{get_param_url}")
+        get_param_channel = _channel_with_request_context(
+            channel,
+            manifest=get_param_url,
+            referer=page_referer,
+            origin=page_origin,
+            extra_headers={"Accept": "application/json, text/plain, */*"},
+        )
+        info = _perform_request(get_param_channel, "GET", use_range=False)
+        body = info.get("body_text") or ""
+        if not body:
+            continue
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = {}
+        node = str((payload or {}).get("node") or "").strip()
+        if node and node not in raw_nodes:
+            raw_nodes.append(node)
+
+    node_variants: list[str] = []
+    for raw_node in raw_nodes:
+        for variant in _gdtv_node_variants(raw_node):
+            if variant not in node_variants:
+                node_variants.append(variant)
+
+    for node_value in node_variants:
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(page_url)
+        api_url = f"{channel_api_base}&node={urllib.parse.quote(node_value, safe='')}"
+        info, candidates = _request_json_candidates(
+            channel,
+            api_url,
+            referer=page_referer,
+            origin=page_origin,
+            progress_callback=progress_callback,
+        )
+        attempts.append(api_url)
+        if candidates:
+            all_candidates.extend(candidates)
+            media_url = candidates[0]
+            return _make_result(
+                status="ok",
+                media_url=media_url,
+                media_type=_guess_media_type(media_url, "", b"") or "hls",
+                http_status=info.get("http_status"),
+                final_url=page_url,
+                message="resolved from gdtv api with node",
+                resolved_from="api",
+                candidates=_dedupe_candidates(all_candidates),
+            )
+
+    if attempts:
+        _notify(progress_callback, "GDTV 接口链已尝试，未直接拿到可播放地址，继续尝试其他策略...")
+    return None
+
+
+def _resolve_via_site_strategies(
+    channel: dict[str, Any],
+    page_url: str,
+    body_text: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Run site-specific strategies in priority order."""
+    del body_text
+    strategies = (
+        _resolve_gdtv_via_api,
+    )
+    for strategy in strategies:
+        if _is_cancelled(cancel_callback):
+            return _cancelled_result(page_url)
+        result = strategy(
+            channel,
+            page_url,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        if isinstance(result, dict) and result.get("status") in {"ok", "cancelled"}:
+            return result
+    return None
 
 
 def _probe_detail_api_candidates(
@@ -912,6 +1195,19 @@ def resolve_channel(
         candidates.extend(_extract_candidates_from_inline_scripts(body_text, final_url))
         candidates = _dedupe_candidates(candidates)
         if not candidates:
+            site_result = _resolve_via_site_strategies(
+                normalized_channel,
+                final_url,
+                body_text,
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+            )
+            if isinstance(site_result, dict):
+                if site_result.get("status") == "ok":
+                    _set_cached(normalized_channel, site_result)
+                    return site_result
+                if site_result.get("status") == "cancelled":
+                    return site_result
             _notify(progress_callback, "静态页面未命中，正在探测详情接口...")
             if _is_cancelled(cancel_callback):
                 return _cancelled_result(final_url)

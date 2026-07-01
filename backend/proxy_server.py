@@ -166,6 +166,8 @@ class ProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         query = parse_qs(parsed_path.query)
         index_text = query.get('index', query.get('sourceIndex', ['']))[0]
         force_text = query.get('force', ['0'])[0]
+        probe_text = query.get('probe', query.get('deep', ['0']))[0]
+        session_text = query.get('session', query.get('playId', ['']))[0]
         app_ref = getattr(self.server, 'app_ref', None)
 
         if not app_ref or not hasattr(app_ref, 'resolve_frontend_channel'):
@@ -179,7 +181,12 @@ class ProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            result = app_ref.resolve_frontend_channel(index, force=str(force_text).lower() in {"1", "true", "yes"})
+            result = app_ref.resolve_frontend_channel(
+                index,
+                force=str(force_text).lower() in {"1", "true", "yes"},
+                probe=str(probe_text).lower() in {"1", "true", "yes"},
+                session_id=str(session_text or ""),
+            )
         except Exception as exc:
             result = {"ok": False, "status": "error", "message": str(exc)}
 
@@ -207,24 +214,49 @@ class ProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.send_error(400, "Missing URL parameter")
             return
 
-        target_url = clean_media_url(unquote(target_url))
+        # parse_qs has already decoded the outer /proxy query parameter once.
+        # Do not unquote again: signed media URLs often contain encoded bytes
+        # such as %2F/%2B/%3D inside tokens, and decoding them changes the
+        # upstream URL enough for CDNs like GDTV/tcdn to reject it with 403.
+        target_url = clean_media_url(target_url)
         ua = query_params.get('ua', [''])[0]
         ref = query_params.get('ref', [''])[0]
+        cookie_header = query_params.get('cookie', [''])[0]
+        target_lower = target_url.lower()
+        gdtv_media = 'tcdn.itouchtv.cn/live/' in target_lower or 'gdtv.cn/live/' in target_lower
 
         MAX_HEADERS = 50
         MAX_STREAM_SIZE = 500 * 1024 * 1024  # 500MB 上限
 
         req = urllib.request.Request(target_url, method=method)
         header_count = 0
+        passthrough_headers = {
+            'accept',
+            'accept-language',
+            'cache-control',
+            'pragma',
+            'range',
+            'if-none-match',
+            'if-modified-since',
+            'if-match',
+            'if-range',
+            'content-type',
+        }
         for key, value in self.headers.items():
-            if key.lower() not in ['host', 'connection', 'accept-encoding', 'origin', 'referer', 'user-agent']:
-                if header_count >= MAX_HEADERS:
-                    break
-                req.add_header(key, value)
-                header_count += 1
+            lower_key = key.lower()
+            if lower_key not in passthrough_headers:
+                continue
+            if header_count >= MAX_HEADERS:
+                break
+            req.add_header(key, value)
+            header_count += 1
 
-        req.add_header('User-Agent', unquote(ua) if ua else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-        if ref: req.add_header('Referer', unquote(ref))
+        req.add_header('User-Agent', ua if ua else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        if ref: req.add_header('Referer', ref)
+        if cookie_header and not gdtv_media: req.add_header('Cookie', cookie_header)
+        origin = query_params.get('origin', [''])[0]
+        if origin and not gdtv_media:
+            req.add_header('Origin', origin)
 
         if method == "POST":
             content_length = int(self.headers.get('Content-Length', 0))
