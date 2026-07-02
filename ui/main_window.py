@@ -610,6 +610,9 @@ class MainWindow(QMainWindow):
         self.playlist_overlay.delete_album_requested.connect(self._delete_playlist_album)
         self.playlist_overlay.edit_album_requested.connect(self._edit_playlist_album)
         self.playlist_overlay.refresh_album_requested.connect(self._refresh_playlist_album)
+        self.playlist_overlay.add_items_requested.connect(self._add_playlist_items)
+        self.playlist_overlay.remove_items_requested.connect(self._remove_playlist_items)
+        self.playlist_overlay.move_items_requested.connect(self._move_playlist_items)
         self.playlist_overlay.item_selected.connect(self._on_playlist_item_selected)
         self.playlist_overlay.memory_play_requested.connect(self._play_playlist_from_memory)
 
@@ -1228,6 +1231,93 @@ class MainWindow(QMainWindow):
         self.playlist_album_mgr.update_album(album_id, {"rescan": True})
         self._refresh_playlist_overlay()
         self.statusBar().showMessage("播放专辑已刷新", 3000)
+
+    def _playlist_media_file_dialog_filter(self) -> str:
+        """Return a QFileDialog filter for local playlist media files."""
+        video_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_VIDEO_EXTENSIONS))
+        audio_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_AUDIO_EXTENSIONS))
+        image_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_IMAGE_EXTENSIONS))
+        gif_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_GIF_EXTENSIONS))
+        media_exts = " ".join(f"*{ext}" for ext in sorted(LOCAL_MEDIA_EXTENSIONS))
+        return (
+            f"本地媒体文件 ({media_exts});;"
+            f"视频文件 ({video_exts});;"
+            f"音频文件 ({audio_exts});;"
+            f"图片文件 ({image_exts});;"
+            f"GIF 文件 ({gif_exts});;"
+            "所有文件 (*)"
+        )
+
+    def _add_playlist_items(self, album_id: str) -> None:
+        """Add one or more local media files to a playlist."""
+        if not album_id:
+            return
+        album = self.playlist_album_mgr.get_album(album_id, validate=False) or {}
+        start_dir = album.get("source_dir") or ""
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = self.playlist_mgr.channels_dir
+        selected_files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "添加播放列表文件",
+            start_dir,
+            self._playlist_media_file_dialog_filter(),
+        )
+        if not selected_files:
+            return
+        supported_files = [os.path.abspath(path) for path in selected_files if is_local_media(path) and os.path.isfile(path)]
+        if not supported_files:
+            message_dialogs.warning(self, "播放列表", "没有可添加的受支持媒体文件。")
+            return
+        added_count = self.playlist_album_mgr.add_items(album_id, supported_files)
+        selected_ids = [self.playlist_album_mgr.item_id(path) for path in supported_files]
+        self._refresh_playlist_overlay()
+        if hasattr(self.playlist_overlay, "set_selected_item_ids"):
+            self.playlist_overlay.set_selected_item_ids(selected_ids)
+        if added_count:
+            self.statusBar().showMessage(f"已添加 {added_count} 个文件到播放列表", 3000)
+        else:
+            self.statusBar().showMessage("所选文件已在播放列表中", 3000)
+
+    def _remove_playlist_items(self, album_id: str, item_ids: list[str]) -> None:
+        """Remove selected items from a playlist without deleting files."""
+        item_ids = [str(item_id or "") for item_id in item_ids if str(item_id or "")]
+        if not album_id or not item_ids:
+            return
+        count = len(item_ids)
+        reply = message_dialogs.question(
+            self,
+            "移除条目",
+            f"确定从当前播放列表移除选中的 {count} 个条目吗？\n\n不会删除原始媒体文件。",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        removed_count = self.playlist_album_mgr.remove_items(album_id, item_ids)
+        self._refresh_playlist_overlay()
+        if removed_count:
+            self.statusBar().showMessage(f"已从播放列表移除 {removed_count} 个条目", 3000)
+        else:
+            self.statusBar().showMessage("没有可移除的播放列表条目", 3000)
+
+    def _move_playlist_items(self, album_id: str, item_ids: list[str], action: str) -> None:
+        """Move selected playlist items and persist the new order."""
+        item_ids = [str(item_id or "") for item_id in item_ids if str(item_id or "")]
+        if not album_id or not item_ids:
+            return
+        moved = self.playlist_album_mgr.move_items(album_id, item_ids, action)
+        if moved:
+            self._refresh_playlist_overlay()
+            if hasattr(self.playlist_overlay, "set_selected_item_ids"):
+                self.playlist_overlay.set_selected_item_ids(item_ids)
+            action_labels = {
+                "top": "置顶",
+                "up": "上移",
+                "down": "下移",
+                "bottom": "置底",
+            }
+            self.statusBar().showMessage(f"已{action_labels.get(str(action), '移动')}选中条目", 3000)
+        else:
+            self.statusBar().showMessage("选中条目位置未变化", 3000)
 
     def _on_playlist_item_selected(self, album_id: str, item_id: str, path: str) -> None:
         """Play a selected playlist item."""

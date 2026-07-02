@@ -3,6 +3,7 @@ import os
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +26,9 @@ class PlaylistOverlay(BaseOverlay):
     delete_album_requested = Signal(str)
     edit_album_requested = Signal(str)
     refresh_album_requested = Signal(str)
+    add_items_requested = Signal(str)
+    remove_items_requested = Signal(str, list)
+    move_items_requested = Signal(str, list, str)
     item_selected = Signal(str, str, str)
     memory_play_requested = Signal(str)
 
@@ -153,8 +157,13 @@ class PlaylistOverlay(BaseOverlay):
         self.album_combo.setToolTip("点击切换播放专辑")
         self.new_button = QPushButton("+")
         self.new_button.setFixedWidth(36)
+        self.album_delete_button = QPushButton("-")
+        self.album_delete_button.setFixedWidth(36)
+        self.album_delete_button.setObjectName("dangerButton")
+        self.album_delete_button.setToolTip("删除当前播放列表")
         album_row.addWidget(self.album_combo, 1)
         album_row.addWidget(self.new_button)
+        album_row.addWidget(self.album_delete_button)
         root.addLayout(album_row)
 
         self.hint_label = QLabel("选择专辑后双击媒体播放")
@@ -164,15 +173,30 @@ class PlaylistOverlay(BaseOverlay):
         self.item_list = QListWidget()
         self.item_list.setTextElideMode(Qt.ElideRight)
         self.item_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.item_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         root.addWidget(self.item_list, 1)
+
+        move_row = QHBoxLayout()
+        self.move_top_button = QPushButton("置顶")
+        self.move_up_button = QPushButton("上移")
+        self.move_down_button = QPushButton("下移")
+        self.move_bottom_button = QPushButton("置底")
+        move_row.addWidget(self.move_top_button)
+        move_row.addWidget(self.move_up_button)
+        move_row.addWidget(self.move_down_button)
+        move_row.addWidget(self.move_bottom_button)
+        root.addLayout(move_row)
 
         action_row = QHBoxLayout()
         self.settings_button = QPushButton("设置")
         self.refresh_button = QPushButton("刷新")
+        self.add_button = QPushButton("添加")
         self.delete_button = QPushButton("删除")
         self.delete_button.setObjectName("dangerButton")
+        self.delete_button.setText("移除")
         action_row.addWidget(self.settings_button)
         action_row.addWidget(self.refresh_button)
+        action_row.addWidget(self.add_button)
         action_row.addWidget(self.delete_button)
         root.addLayout(action_row)
 
@@ -186,12 +210,20 @@ class PlaylistOverlay(BaseOverlay):
 
         self.album_combo.currentIndexChanged.connect(self._on_album_combo_changed)
         self.new_button.clicked.connect(self.create_album_requested.emit)
+        self.album_delete_button.clicked.connect(self._emit_delete_album)
         self.settings_button.clicked.connect(self._emit_edit_album)
         self.refresh_button.clicked.connect(self._emit_refresh_album)
-        self.delete_button.clicked.connect(self._emit_delete_album)
+        self.add_button.clicked.connect(self._emit_add_items)
+        self.delete_button.clicked.connect(self._emit_remove_items)
+        self.move_top_button.clicked.connect(lambda: self._emit_move_items("top"))
+        self.move_up_button.clicked.connect(lambda: self._emit_move_items("up"))
+        self.move_down_button.clicked.connect(lambda: self._emit_move_items("down"))
+        self.move_bottom_button.clicked.connect(lambda: self._emit_move_items("bottom"))
         self.memory_button.clicked.connect(self._emit_memory_play)
         self.item_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.item_list.itemSelectionChanged.connect(self._update_item_action_state)
         self.item_list.viewport().installEventFilter(self)
+        self._update_item_action_state()
 
     def eventFilter(self, obj, event):
         if event.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.Wheel, QEvent.KeyPress):
@@ -238,6 +270,7 @@ class PlaylistOverlay(BaseOverlay):
         self._active_album_id = album.get("id") or self._active_album_id
         self._items = list(album.get("items") or [])
         self.item_list.clear()
+        self.album_delete_button.setEnabled(bool(self._active_album_id and self._active_album_id != "default"))
         for index, item in enumerate(self._items, start=1):
             type_label = resource_type_label(item.get("type") or item.get("path") or "")
             status = item.get("status_text") or ""
@@ -253,6 +286,8 @@ class PlaylistOverlay(BaseOverlay):
         settings = album.get("settings") or {}
         suffix = "自动连播" if settings.get("auto_play_next", True) else "手动播放"
         self.hint_label.setText(f"{len(self._items)} 个媒体 · {suffix}")
+
+        self._update_item_action_state()
 
     def _on_album_combo_changed(self, _index: int) -> None:
         self._active_album_id = self.active_album_id()
@@ -275,6 +310,63 @@ class PlaylistOverlay(BaseOverlay):
             message_dialogs.information(self, "播放列表", "默认专辑不能删除。")
             return
         self.delete_album_requested.emit(album_id)
+
+    def selected_item_ids(self) -> list[str]:
+        ids: list[str] = []
+        for list_item in self.item_list.selectedItems():
+            media = list_item.data(Qt.UserRole) or {}
+            item_id = str(media.get("id") or "")
+            if item_id:
+                ids.append(item_id)
+        return ids
+
+    def set_selected_item_ids(self, item_ids: list[str]) -> None:
+        wanted = {str(item_id or "") for item_id in item_ids if str(item_id or "")}
+        self.item_list.clearSelection()
+        if not wanted:
+            self._update_item_action_state()
+            return
+        first_selected_row = -1
+        for row in range(self.item_list.count()):
+            list_item = self.item_list.item(row)
+            media = list_item.data(Qt.UserRole) or {}
+            if str(media.get("id") or "") in wanted:
+                list_item.setSelected(True)
+                if first_selected_row < 0:
+                    first_selected_row = row
+        if first_selected_row >= 0:
+            self.item_list.scrollToItem(self.item_list.item(first_selected_row))
+        self._update_item_action_state()
+
+    def _update_item_action_state(self) -> None:
+        has_selection = bool(self.item_list.selectedItems())
+        for button in (
+            self.delete_button,
+            self.move_top_button,
+            self.move_up_button,
+            self.move_down_button,
+            self.move_bottom_button,
+        ):
+            button.setEnabled(has_selection)
+
+    def _emit_add_items(self) -> None:
+        album_id = self.active_album_id()
+        if album_id:
+            self.add_items_requested.emit(album_id)
+
+    def _emit_remove_items(self) -> None:
+        item_ids = self.selected_item_ids()
+        if not item_ids:
+            message_dialogs.information(self, "播放列表", "请先选择要移除的条目。")
+            return
+        self.remove_items_requested.emit(self.active_album_id(), item_ids)
+
+    def _emit_move_items(self, action: str) -> None:
+        item_ids = self.selected_item_ids()
+        if not item_ids:
+            message_dialogs.information(self, "播放列表", "请先选择要移动的条目。")
+            return
+        self.move_items_requested.emit(self.active_album_id(), item_ids, action)
 
     def _emit_memory_play(self) -> None:
         album_id = self.active_album_id()

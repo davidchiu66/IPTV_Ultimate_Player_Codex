@@ -80,6 +80,7 @@ class PlaylistAlbumManager:
             "source_dir": "",
             "recursive": False,
             "items": [],
+            "excluded_paths": [],
             "settings": self.default_settings(),
             "created_at": now,
             "updated_at": now,
@@ -133,6 +134,11 @@ class PlaylistAlbumManager:
             settings["remember_playback"] = bool(settings.get("remember_playback"))
             normalized["settings"] = settings
             normalized["items"] = [self._normalize_item(item) for item in normalized.get("items") or [] if isinstance(item, dict)]
+            normalized["excluded_paths"] = [
+                self.path_key(path)
+                for path in normalized.get("excluded_paths") or []
+                if self.path_key(path)
+            ]
             memory = normalized.get("playback_memory") or {}
             normalized["playback_memory"] = self._normalize_memory(memory)
             normalized["created_at"] = normalized.get("created_at") or self.now_iso()
@@ -238,6 +244,51 @@ class PlaylistAlbumManager:
         items.sort(key=lambda item: str(item.get("name") or "").lower())
         return items
 
+    def _merge_rescan_items(
+        self,
+        existing_items: list[dict[str, Any]],
+        scanned_items: list[dict[str, Any]],
+        excluded_paths: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Keep the user's manual item order while appending newly discovered files."""
+        excluded = {self.path_key(path) for path in excluded_paths or [] if self.path_key(path)}
+        scanned_by_path = {
+            self.path_key(item.get("path") or ""): self._normalize_item(item)
+            for item in scanned_items
+            if item.get("path") and self.path_key(item.get("path") or "") not in excluded
+        }
+        used_paths: set[str] = set()
+        merged: list[dict[str, Any]] = []
+
+        for item in existing_items or []:
+            old_item = self._normalize_item(item)
+            path_key = self.path_key(old_item.get("path") or "")
+            if path_key in excluded:
+                continue
+            scanned_item = scanned_by_path.get(path_key)
+            if not scanned_item:
+                if old_item.get("path") and os.path.isfile(old_item.get("path") or "") and is_local_media(old_item.get("path") or ""):
+                    merged.append(old_item)
+                    used_paths.add(path_key)
+                continue
+            refreshed = dict(old_item)
+            refreshed["id"] = scanned_item.get("id") or refreshed.get("id")
+            refreshed["name"] = scanned_item.get("name") or refreshed.get("name")
+            refreshed["path"] = scanned_item.get("path") or refreshed.get("path")
+            refreshed["type"] = scanned_item.get("type") or refreshed.get("type")
+            if refreshed.get("duration") is None:
+                refreshed["duration"] = scanned_item.get("duration")
+            merged.append(refreshed)
+            used_paths.add(path_key)
+
+        for item in scanned_items or []:
+            normalized = self._normalize_item(item)
+            path_key = self.path_key(normalized.get("path") or "")
+            if path_key and path_key not in used_paths and path_key not in excluded:
+                merged.append(normalized)
+                used_paths.add(path_key)
+        return merged
+
     def create_album_from_directory(self, dir_path: str, name: str = "", recursive: bool = False) -> dict[str, Any]:
         """Create a persisted album from a folder."""
         source_dir = self.normalize_path(dir_path)
@@ -249,6 +300,7 @@ class PlaylistAlbumManager:
             "source_dir": source_dir,
             "recursive": bool(recursive),
             "items": self.scan_directory(source_dir, recursive=recursive),
+            "excluded_paths": [],
             "settings": self.default_settings(),
             "created_at": now,
             "updated_at": now,
@@ -278,7 +330,12 @@ class PlaylistAlbumManager:
                 settings["remember_playback"] = bool(settings.get("remember_playback"))
                 album["settings"] = settings
             if updates.get("rescan"):
-                album["items"] = self.scan_directory(album.get("source_dir") or "", bool(album.get("recursive")))
+                scanned_items = self.scan_directory(album.get("source_dir") or "", bool(album.get("recursive")))
+                album["items"] = self._merge_rescan_items(
+                    album.get("items") or [],
+                    scanned_items,
+                    album.get("excluded_paths") or [],
+                )
             album["updated_at"] = self.now_iso()
             self.save()
             return dict(album)
@@ -333,6 +390,150 @@ class PlaylistAlbumManager:
                 self.data["active_album_id"] = "default"
             self.save()
         return changed
+
+    def add_items(self, album_id: str, paths: list[str]) -> int:
+        """Add local media files to an album without duplicating existing items."""
+        normalized_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for path in paths or []:
+            normalized = self.normalize_path(path)
+            path_key = self.path_key(normalized)
+            if not normalized or path_key in seen_paths:
+                continue
+            try:
+                if not os.path.isfile(normalized) or not is_local_media(normalized):
+                    continue
+            except OSError:
+                continue
+            seen_paths.add(path_key)
+            normalized_paths.append(normalized)
+        if not normalized_paths:
+            return 0
+
+        for album in self.data.get("albums", []):
+            if album.get("id") != album_id:
+                continue
+            items = list(album.get("items") or [])
+            existing_paths = {
+                self.path_key(item.get("path") or "")
+                for item in items
+                if self.path_key(item.get("path") or "")
+            }
+            excluded_paths = {
+                self.path_key(path)
+                for path in album.get("excluded_paths") or []
+                if self.path_key(path)
+            }
+            added_count = 0
+            for path in normalized_paths:
+                path_key = self.path_key(path)
+                if path_key in existing_paths:
+                    excluded_paths.discard(path_key)
+                    continue
+                items.append(
+                    {
+                        "id": self.item_id(path),
+                        "name": os.path.basename(path),
+                        "path": path,
+                        "type": resource_type_key(path),
+                        "duration": None,
+                    }
+                )
+                existing_paths.add(path_key)
+                excluded_paths.discard(path_key)
+                added_count += 1
+            if added_count <= 0:
+                if set(album.get("excluded_paths") or []) != excluded_paths:
+                    album["excluded_paths"] = sorted(excluded_paths)
+                    album["updated_at"] = self.now_iso()
+                    self.save()
+                return 0
+            album["items"] = items
+            album["excluded_paths"] = sorted(excluded_paths)
+            album["updated_at"] = self.now_iso()
+            self.save()
+            return added_count
+        return 0
+
+    def remove_items(self, album_id: str, item_ids: list[str]) -> int:
+        """Remove items from an album without deleting files from disk."""
+        selected_ids = {str(item_id or "") for item_id in item_ids if str(item_id or "")}
+        if not selected_ids:
+            return 0
+        for album in self.data.get("albums", []):
+            if album.get("id") != album_id:
+                continue
+            items = list(album.get("items") or [])
+            kept_items = [item for item in items if str(item.get("id") or "") not in selected_ids]
+            removed_count = len(items) - len(kept_items)
+            if removed_count <= 0:
+                return 0
+            excluded_paths = {
+                self.path_key(path)
+                for path in album.get("excluded_paths") or []
+                if self.path_key(path)
+            }
+            for item in items:
+                if str(item.get("id") or "") in selected_ids:
+                    path_key = self.path_key(item.get("path") or "")
+                    if path_key:
+                        excluded_paths.add(path_key)
+            album["items"] = kept_items
+            album["excluded_paths"] = sorted(excluded_paths)
+            memory = album.get("playback_memory") or {}
+            if str(memory.get("item_id") or "") in selected_ids:
+                album["playback_memory"] = {}
+            album["updated_at"] = self.now_iso()
+            self.save()
+            return removed_count
+        return 0
+
+    def move_items(self, album_id: str, item_ids: list[str], action: str) -> bool:
+        """Move selected items inside an album while preserving their relative order."""
+        selected_ids = {str(item_id or "") for item_id in item_ids if str(item_id or "")}
+        action = str(action or "").strip().lower()
+        if not selected_ids or action not in {"top", "up", "down", "bottom"}:
+            return False
+
+        for album in self.data.get("albums", []):
+            if album.get("id") != album_id:
+                continue
+            items = list(album.get("items") or [])
+            if len(items) < 2:
+                return False
+            original_ids = [str(item.get("id") or "") for item in items]
+
+            if action == "top":
+                selected = [item for item in items if str(item.get("id") or "") in selected_ids]
+                unselected = [item for item in items if str(item.get("id") or "") not in selected_ids]
+                moved_items = selected + unselected
+            elif action == "bottom":
+                selected = [item for item in items if str(item.get("id") or "") in selected_ids]
+                unselected = [item for item in items if str(item.get("id") or "") not in selected_ids]
+                moved_items = unselected + selected
+            elif action == "up":
+                moved_items = list(items)
+                for index in range(1, len(moved_items)):
+                    current_selected = str(moved_items[index].get("id") or "") in selected_ids
+                    previous_selected = str(moved_items[index - 1].get("id") or "") in selected_ids
+                    if current_selected and not previous_selected:
+                        moved_items[index - 1], moved_items[index] = moved_items[index], moved_items[index - 1]
+            else:
+                moved_items = list(items)
+                for index in range(len(moved_items) - 2, -1, -1):
+                    current_selected = str(moved_items[index].get("id") or "") in selected_ids
+                    next_selected = str(moved_items[index + 1].get("id") or "") in selected_ids
+                    if current_selected and not next_selected:
+                        moved_items[index], moved_items[index + 1] = moved_items[index + 1], moved_items[index]
+
+            moved_ids = [str(item.get("id") or "") for item in moved_items]
+            if moved_ids == original_ids:
+                return False
+            album["items"] = moved_items
+            album["updated_at"] = self.now_iso()
+            self.save()
+            return True
+        return False
 
     def validate_item(self, item: dict[str, Any]) -> dict[str, str]:
         """Return item status metadata."""

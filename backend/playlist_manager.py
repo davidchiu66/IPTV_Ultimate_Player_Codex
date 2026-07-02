@@ -78,6 +78,19 @@ class PlaylistManager:
     def _clean_text(self, value):
         return value.strip() if isinstance(value, str) else ""
 
+    def _is_loose_txt_metadata_line(self, line):
+        """Return whether a loose TXT line is metadata rather than a channel."""
+        text = self._clean_text(line)
+        if not text:
+            return False
+        return bool(
+            re.match(
+                r"^(?:ua|user[-_\s]?agent|http[-_\s]?user[-_\s]?agent|referer|referrer|header|headers)\s*=",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
     def _find_first_text(self, data, keys):
         if not isinstance(data, dict):
             return ""
@@ -656,6 +669,8 @@ class PlaylistManager:
             for raw_line in handle:
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
+                    continue
+                if self._is_loose_txt_metadata_line(line):
                     continue
                 if "," not in line:
                     continue
